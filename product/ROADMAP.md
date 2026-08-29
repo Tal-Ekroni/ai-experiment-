@@ -100,3 +100,30 @@ is where she already is. Bank the **annual summary** as a cheap delight that mar
 **recurring engine** and **drift**. Treat **live sync** as the scheduled big rock, not a squeeze.
 Everything a finance nerd would love but the reluctant partner wouldn't — chat boxes, streaks,
 net-worth dashboards — stays dead.
+
+---
+
+## Roadmap addendum — categories with codes + wealth streams *(Council round 2)*
+Full workings in `gauntlet/product/round2-council.md`.
+
+**"Real category codes":** the system is **MCC** (ISO 18245, the card networks' 4-digit merchant
+codes). Your Max file doesn't carry it — only a text category — so MCC is unlocked by **live sync**,
+not the file. For household budgeting, **COICOP** (Israel's CBS taxonomy) fits better than MCC. Two
+upgrades: a **COICOP 2-level category hierarchy** now (S–M), and **MCC capture + map** later, riding
+live sync.
+
+**Wealth streams — YES, as a manual/file-based balance sheet, never auto-sync.** Auto-syncing
+brokers/pension/keren stays a **gate fail** (no local-first aggregator exists for Israeli
+instruments; it would break the local-first promise). But the *value* — one net-worth number that
+goes up — is fully deliverable by manual monthly balances + statement import, which for keren/pension
+is the only realistic path anyway.
+
+| Order | Bet | Effort |
+|---|---|---|
+| **A** | **Free cash flow** surfaced ("you kept ₪X this month") — mostly built, the bridge to wealth | S |
+| **B** | **Household balance sheet** — assets (cash, broker, keren hishtalmut, pension/gemel, real estate) − liabilities (mortgage, loans, debt) = **net worth over time** | M |
+| **C** | **COICOP category hierarchy** — parent→sub categories ("real categories") | M |
+| **D** | later, with live sync: **MCC** capture · mortgage amortization detail | M |
+
+**Graveyard (unchanged):** auto-sync of broker/pension/keren — cannot be done without breaking
+local-first.
