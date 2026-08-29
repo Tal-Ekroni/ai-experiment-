@@ -272,3 +272,19 @@ td .tag { margin-inline-start: 6px; }
 .fcf-spark { display: flex; align-items: flex-end; gap: 5px; height: 44px; margin-block-start: 12px; }
 .fcf-spark .fs { flex: 1; min-height: 3px; block-size: var(--v); border-radius: 4px 4px 0 0; align-self: flex-end; }
 .fcf-spark .fs.pos { background: var(--under); } .fcf-spark .fs.neg { background: var(--over); }
+
+/* ---- COICOP grouped breakdown ---- */
+.cg { padding-block: 10px; border-block-end: 1px solid var(--line); }
+.cg:last-child { border-block-end: 0; }
+.cg-head { display: flex; align-items: center; gap: 10px; }
+.cg-code { font-variant-numeric: tabular-nums; font-weight: 800; font-size: .78rem; color: var(--muted);
+  background: var(--surface-2); border-radius: 6px; padding: 2px 6px; flex: none; direction: ltr; }
+.cg-name { font-weight: 700; flex: 0 0 auto; }
+.cg-track { flex: 1; block-size: 7px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+.cg-fill { display: block; block-size: 7px; border-radius: 999px; background: hsl(var(--h,168) 58% 50%); }
+.cg-total { font-variant-numeric: tabular-nums; font-weight: 800; direction: ltr; unicode-bidi: isolate; flex: none; min-inline-size: 84px; text-align: end; }
+.cg-leaf { display: flex; align-items: center; gap: 8px; padding: 5px 0 5px 0; margin-inline-start: 8px; color: var(--ink-2); }
+.cg-leaf .ic { inline-size: 24px; block-size: 24px; border-radius: 7px; font-size: .78rem; }
+.cg-lname { flex: 1; font-size: .92rem; }
+.cg-lcode { font-variant-numeric: tabular-nums; font-size: .74rem; color: var(--muted); direction: ltr; }
+.cg-lval { font-variant-numeric: tabular-nums; font-size: .88rem; font-weight: 600; direction: ltr; unicode-bidi: isolate; min-inline-size: 76px; text-align: end; }

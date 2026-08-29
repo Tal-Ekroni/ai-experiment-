@@ -1,8 +1,9 @@
 /** Screen renderers. All data already computed; this file only lays it out. */
-import { h, raw, escape, type Html } from './html.ts';
+import { h, raw, escape, render, type Html } from './html.ts';
 import { fmt } from '../lib/money.ts';
 import { CATEGORIES } from '../lib/db.ts';
 import { catMeta } from '../lib/catmeta.ts';
+import { coicopGroups } from '../lib/coicop.ts';
 
 /** A tinted round icon chip for a category. */
 export function catIcon(cat: string): Html {
@@ -48,4 +49,21 @@ export function statusChips(chips: { cls: string; label: string }[]): Html {
 export function categoryChips(name: string, current?: string): Html {
   return h`<div class="chips">${raw(CATEGORIES.map(c =>
     `<button name="${name}" value="${escape(c)}" ${c === current ? 'data-on' : ''}>${escape(c)}</button>`).join(''))}</div>`;
+}
+
+
+/** COICOP-grouped breakdown: division header + subtotal, nested leaves with their codes. */
+export function coicopRows(mix: { category: string; total: number }[]): Html {
+  const groups = coicopGroups(mix);
+  const grand = groups.reduce((s, g) => s + g.total, 0) || 1;
+  return raw(groups.map(g => render(h`<div class="cg">
+    <div class="cg-head">
+      <span class="cg-code">${g.division.code}</span>
+      <span class="cg-name">${g.division.label}</span>
+      <span class="cg-track"><span class="cg-fill" style="inline-size:${Math.round(g.total/grand*100)}%;--h:${String(g.division.h)}"></span></span>
+      <span class="cg-total">${fmt(g.total)}</span>
+    </div>
+    ${g.leaves.map(l => h`<div class="cg-leaf">${catIcon(l.category)}<span class="cg-lname">${l.category}</span>
+      <span class="cg-lcode">${l.code}</span><span class="cg-lval">${fmt(l.total)}</span></div>`)}
+  </div>`)).join(''));
 }

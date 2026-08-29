@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { openDb, getSetting, setSetting, CATEGORIES, OTHER } from '../lib/db.ts';
 import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
-import { heroBlock, monthBars, catRows, statusChips, categoryChips, catIcon } from './views.ts';
+import { heroBlock, monthBars, catRows, coicopRows, statusChips, categoryChips, catIcon } from './views.ts';
 import { catMeta } from '../lib/catmeta.ts';
 import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
 const catMetaHue = (c: string) => catMeta(c).h;
@@ -218,6 +218,7 @@ function retrospectScreen(): string {
     </div>
     ${monthBars(r.months.map(m => ({ m: m.m, expense: m.expense })), new Date().toISOString().slice(0,7))}</div>
     <div class="card"><h2>לאן הלך הכסף</h2>${raw(catRows(r.mix))}</div>
+    <div class="card"><div class="card-head"><h2>סיווג תקני</h2><span class="sub">COICOP · לפי הלמ״ס</span></div>${coicopRows(r.mix)}</div>
     <div class="grid2">
       ${r.largest ? h`<div class="card"><h2>ההוצאה הגדולה של השנה</h2>
         <div class="big">${raw(escape(fmt(-r.largest.amount)))}</div>
