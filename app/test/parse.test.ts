@@ -45,3 +45,19 @@ test('unescaped quote mid-field (בע"מ) stays literal and does not swallow row
   assert.equal(res.rows[0].descriptor, 'ישראכרט בע"מ');
   assert.equal(res.rows[0].amount, -700289);
 });
+
+test('real .xlsx (OOXML zip, inline strings, Max layout): header-mapped, DD-MM-YYYY, signs', () => {
+  const res = parseUpload(fx('max-demo.xlsx'));
+  assert.equal(res.detectedMapping?.date, 0, 'תאריך עסקה is col A');
+  assert.equal(res.detectedMapping?.amount, 5, 'סכום חיוב is col F, chosen over other numeric cols');
+  assert.equal(res.detectedMapping?.descriptor, 1, 'שם בית העסק is col B');
+  assert.equal(res.rows.length, 4, '3 junk rows + header skipped');
+  assert.deepEqual(res.rows[0], { date: '2025-07-24', amount: -32050, descriptor: 'שופרסל דיל' });
+  assert.equal(res.rows[2].descriptor, 'מסעדת הצפון בע"מ', 'quote in name survives xml decode');
+  assert.equal(res.rows[3].amount, 11961, 'a credit stays positive (refund), not flipped to spend');
+});
+
+test('DD-MM-YYYY with dashes parses', () => {
+  assert.equal(parseDate('24-07-2025'), '2025-07-24');
+  assert.equal(parseDate('8-1-26'), '2026-01-08');
+});

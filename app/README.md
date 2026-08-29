@@ -13,8 +13,9 @@ npm install && npm start        # or: docker compose up
 Export a transactions file from your bank/card site (CSV or "Excel"), drop it in,
 confirm 20 merchants, set a household passcode → **your last twelve months**.
 
-Handles real Israeli exports: windows-1255, `.xls` that is secretly HTML, junk header
-rows, unescaped `בע"מ` quotes, positive-sign card files.
+Handles real Israeli exports: true `.xlsx` (OOXML), windows-1255, `.xls` that is secretly
+HTML, junk header rows, unescaped `בע"מ` quotes, positive-sign card files. Column mapping
+is header-aware (it reads the Hebrew column labels) with a numeric-heuristic fallback.
 
 ## What it does
 

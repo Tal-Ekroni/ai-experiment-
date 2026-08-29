@@ -3,6 +3,7 @@
  * No third-party parser ever touches hostile input.
  */
 import { parseAmount, type Agorot } from './money.ts';
+import { isZip, parseXlsx } from './xlsx.ts';
 
 export interface ParsedRow { date: string; amount: Agorot; descriptor: string }
 export interface ParseResult {
@@ -73,8 +74,8 @@ export function csvRows(text: string): string[][] {
 
 const DATE_RES: [RegExp, (m: RegExpMatchArray) => string][] = [
   [/^(\d{4})-(\d{2})-(\d{2})$/, m => `${m[1]}-${m[2]}-${m[3]}`],
-  [/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{4})$/, m => `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`],
-  [/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{2})$/, m => `20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`],
+  [/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/, m => `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`],
+  [/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2})$/, m => `20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`],
 ];
 export function parseDate(raw: string): string | null {
   const s = raw.trim();
@@ -92,6 +93,29 @@ function isAmount(s: string): boolean {
  * remaining text column. Sign convention detected from the data: if >70% of amounts
  * are positive in a file that is clearly card spending, flip.
  */
+
+/** Israeli bank/card exports label their columns; when a header row is present, trust it. */
+const HEADER_HINTS = {
+  date: [/תאריך\s*עסקה/, /תאריך\s*רכישה/, /^תאריך$/, /תאריך\s*ערך/, /date/i],
+  amount: [/סכום\s*חיוב/, /סכום\s*החיוב/, /^סכום$/, /סכום\s*עסקה/, /amount/i, /debit/i],
+  descriptor: [/שם\s*בית\s*העסק/, /שם\s*בית\s*עסק/, /תיאור/, /בית\s*עסק/, /merchant|description|name/i],
+};
+function headerMapping(raw: string[][]): { mapping: Mapping; dataStart: number } | null {
+  for (let r = 0; r < Math.min(raw.length, 8); r++) {
+    const row = raw[r];
+    if (!row || row.length < 3) continue;
+    const find = (pats: RegExp[]) => row.findIndex(cell => pats.some(p => p.test((cell ?? '').trim())));
+    const date = find(HEADER_HINTS.date), amount = find(HEADER_HINTS.amount), descriptor = find(HEADER_HINTS.descriptor);
+    if (date >= 0 && amount >= 0 && descriptor >= 0) {
+      // sign convention from the data below the header
+      const amts = raw.slice(r + 1, r + 21).map(rr => { try { return parseAmount(rr[amount] ?? ''); } catch { return NaN; } }).filter(n => !Number.isNaN(n));
+      const posShare = amts.length ? amts.filter(a => a > 0).length / amts.length : 0;
+      return { mapping: { date, amount, descriptor, signFlip: posShare > 0.7 }, dataStart: r + 1 };
+    }
+  }
+  return null;
+}
+
 export function detectMapping(raw: string[][]): { mapping: Mapping; dataStart: number } | null {
   for (let start = 0; start < Math.min(raw.length, 6); start++) {
     const sample = raw.slice(start, start + 20).filter(r => r.length >= 2);
@@ -128,9 +152,14 @@ export function detectMapping(raw: string[][]): { mapping: Mapping; dataStart: n
 
 /** Full pipeline: bytes → rows. Returns raw grid too, for the column-mapping screen. */
 export function parseUpload(buf: Buffer): ParseResult {
-  const text = decodeUpload(buf);
-  const raw = looksLikeHtml(text) ? htmlTableRows(text) : csvRows(text);
-  const det = detectMapping(raw);
+  let raw: string[][];
+  if (isZip(buf)) {
+    raw = parseXlsx(buf);                     // real OOXML .xlsx
+  } else {
+    const text = decodeUpload(buf);
+    raw = looksLikeHtml(text) ? htmlTableRows(text) : csvRows(text);
+  }
+  const det = headerMapping(raw) ?? detectMapping(raw);   // labels win, else heuristic
   if (!det) return { rows: [], headers: raw[0] ?? [], raw, detectedMapping: null };
   return { rows: applyMapping(raw, det.mapping, det.dataStart), headers: raw[0] ?? [], raw, detectedMapping: det.mapping };
 }
