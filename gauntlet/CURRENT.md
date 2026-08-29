@@ -1,28 +1,37 @@
 # Gauntlet — current state
 
-**Stage:** 2 — Spec gauntlet
-**Round:** 5 complete
-**Floor:** 9.0 **Mean:** 9.2 **Bar:** **PASS** (floor ≥ 8.0 ✓, mean ≥ 9.0 ✓)
+**Stage:** 2 — Spec gauntlet · **COMPLETE**
+**Round:** 6 of 6
+**Floor:** 9.0 **Mean:** 9.6 **Bar:** **PASS** — second consecutive clean pass
 
 ## Status
 
-Progression: 4.2 → 6.5 → 7.6 → 8.7 → **9.2**. First clean pass.
+### CONVERGED at round 6.
 
-Round 5 staged the setup so value arrives at twenty minutes instead of after an evening, gave the
-second user a read-only reply channel that opens no inbound port (the bot poll is outbound), gave
-health a nightly self-check on the one channel that survives every failure it covers, resolved the
-three self-contradictions from round 4, and stated reconciliation's real resolution rather than an
-overstated one.
+Progression: 4.2 → 6.5 → 7.6 → 8.7 → 9.2 → **9.6**. Rubric frozen at stage 1 and never modified.
 
-**Dimension 6 reached 10** — it started at 3, carries double weight, and was the run's binding
-constraint from round 1.
+Round 6 was the confirmation round: five bounded fixes, no new scope. The panel returned **seven
+findings, zero blocking** — every remaining concern is either an empirical assumption only shipping
+can test, an inherent risk correctly disclosed, or work belonging to a later stage. All seven are in
+`OPEN-RISKS.md`.
 
-Every remaining finding is bounded and local; no seat found a structural defect. One theme connects
-four of them: round 5's new surfaces arrived without the rigour the older sections earned over four
-rounds.
+Final artifact: **`rounds/06-artifact.md`**.
 
-## Next action
+## What exists
 
-Round 6 — the confirmation round. Must clear the bar again **and** produce no finding that changes
-the artifact, per `GAUNTLET.md`'s convergence rule. Execute against `rounds/05-mandate.md`; no new
-scope.
+A specification, rewritten in full six times against a seven-seat hostile panel. **No application
+code has been written.**
+
+## Next action — awaiting the user
+
+Stage 2 of 6 is done. Remaining stages, in order:
+
+- **Stage 3** — Architecture gauntlet (schema, process boundaries, failure modes). Rounds, same loop.
+- **Stage 4** — Build, vertical slices, each with its own mini-gauntlet. Hours of work, not minutes.
+- **Stage 5** — Red-team gauntlet against *running code*: actually run it, actually attempt the
+  descriptor injection, actually check a month's arithmetic against a hand-computed total.
+- **Stage 6** — Ship gate.
+
+The natural first build target is **stage 1 of §2**: one file import, twenty merchant confirmations,
+the twelve-month retrospect. It is the smallest thing that is genuinely useful and it tests risk #1
+and risk #2 for the price of an evening.
