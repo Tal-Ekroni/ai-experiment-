@@ -35,7 +35,7 @@ export function page(title: string, active: string, body: Html | string, opts: {
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(title)} · קופה</title><link rel="stylesheet" href="/kupa.css"></head><body>
-${opts.nav === false ? '' : `<nav>${links.map(([href, label]) =>
+${opts.nav === false ? '' : `<nav><span class="brand">קופה</span>${links.map(([href, label]) =>
   `<a href="${href}"${href === active ? ' aria-current="page"' : ''}>${escape(label)}</a>`).join('')}</nav>`}
 <main>${render(body)}</main></body></html>`;
 }

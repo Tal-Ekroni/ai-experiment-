@@ -6,9 +6,10 @@ import { CATEGORIES } from '../lib/db.ts';
 export function heroBlock(delta: number, label: string, caveat: string): Html {
   const over = delta > 0;
   return h`<div class="hero ${over ? 'over' : 'under'}">
-    <div class="amount"><span class="glyph">${over ? '▲' : '▼'}</span>${raw(escape(fmt(Math.abs(delta))))}</div>
+    <div class="cap">${over ? 'מעל הרגיל' : 'מתחת לרגיל'}</div>
+    <div class="amount"><span class="glyph">${over ? '▲' : '▼'}</span>${escape(fmt(Math.abs(delta)))}</div>
     <div class="label">${label}</div>
-    <div class="sub">${caveat}</div>
+    <div class="note">${caveat}</div>
   </div>`;
 }
 

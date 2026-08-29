@@ -135,7 +135,7 @@ function dashboard(): string {
     hero = h`<div class="hero"><div class="amount">${escape(fmt(retro.net, { sign: true }))}</div>
       <div class="label">נשאר לכם השנה</div><div class="sub">עדיין אין חודשיים מלאים להשוואה</div></div>`;
   }
-  return page('ראשי', '/', h`<div class="card">${hero}${chips}</div>${follow}
+  return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${follow}
     <div class="card"><div class="card-head"><h2>12 חודשים</h2><span class="sub">הוצאה חודשית</span></div>
       ${monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense })), thisMonth)}</div>`);
 }
@@ -145,12 +145,12 @@ function retrospectScreen(): string {
   if (!r) return page('השנה', '/retrospect', h`<div class="empty">אין נתונים עדיין</div>`);
   return page('השנה האחרונה שלכם', '/retrospect', h`
     <div class="card"><h1>השנה האחרונה שלכם</h1>
-    <div class="grid2">
-      <div><div class="sub">נכנס</div><div class="big">${fmt(r.totalIn)}</div></div>
-      <div><div class="sub">יצא</div><div class="big">${fmt(r.totalOut)}</div></div>
-      <div><div class="sub">נשאר</div><div class="big" style="color:${r.net >= 0 ? 'var(--under)' : 'var(--over)'}">${fmt(r.net, { sign: true })}</div></div>
+    <div class="grid3">
+      <div class="stat"><div class="k">נכנס</div><div class="v">${fmt(r.totalIn)}</div></div>
+      <div class="stat"><div class="k">יצא</div><div class="v">${fmt(r.totalOut)}</div></div>
+      <div class="stat accent"><div class="k">נשאר</div><div class="v" style="color:${r.net >= 0 ? 'var(--under)' : 'var(--over)'}">${fmt(r.net, { sign: true })}</div></div>
     </div>
-    ${raw(monthBars(r.months.map(m => ({ m: m.m, expense: m.expense }))))}</div>
+    ${monthBars(r.months.map(m => ({ m: m.m, expense: m.expense })), new Date().toISOString().slice(0,7))}</div>
     <div class="card"><h2>לאן הלך הכסף</h2>${raw(catRows(r.mix))}</div>
     <div class="grid2">
       ${r.largest ? h`<div class="card"><h2>ההוצאה הגדולה של השנה</h2>
@@ -227,6 +227,15 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     if (path === '/kupa.css') return send(res, 200, css, 'text/css; charset=utf-8');
+    if (path.startsWith('/fonts/') && !path.includes('..')) {
+      try {
+        const file = new URL('../../public' + path, import.meta.url);
+        const body = readFileSync(file);
+        const type = path.endsWith('.woff2') ? 'font/woff2' : 'text/css; charset=utf-8';
+        res.writeHead(200, { 'content-type': type, 'cache-control': 'public, max-age=31536000, immutable' });
+        return res.end(body);
+      } catch { return send(res, 404, 'not found', 'text/plain'); }
+    }
 
     const setupDone = hasPasscode(db);
     const authed = setupDone && checkSession(db, req.headers.cookie);
