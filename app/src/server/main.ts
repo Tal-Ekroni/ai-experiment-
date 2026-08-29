@@ -114,26 +114,30 @@ function dashboard(): string {
   const ex = explainability(db, mom?.curMonth ?? month);
   const cov = reconciliationCoverage(db, mom?.curMonth ?? month);
   const exTotal = ex.explainedPct + ex.attributedPct;
+  const catOk = exTotal >= 95;
   const chips = statusChips([
-    { cls: cov.spendSharePct >= 80 ? 'good' : cov.spendSharePct > 0 ? 'warn' : 'serious',
-      label: `מאומת: ${cov.reconcilableAccounts}/${cov.totalAccounts} חשבונות · ${cov.spendSharePct}% מההוצאה` },
-    { cls: exTotal >= 95 ? 'good' : 'warn', label: `מוסבר ${ex.explainedPct}% · משויך ${ex.attributedPct}%` },
+    { cls: catOk ? 'good' : 'warn',
+      label: catOk ? `${exTotal}% מההוצאות מסווגות` : `${100 - exTotal}% עדיין לא מסווג` },
+    { cls: cov.spendSharePct >= 80 ? 'good' : 'warn',
+      label: cov.spendSharePct >= 80 ? 'הנתונים תואמים ליתרות' : `${cov.reconcilableAccounts}/${cov.totalAccounts} חשבונות מאומתים` },
   ]);
+  const thisMonth = new Date().toISOString().slice(0, 7);
   let hero: Html, follow: Html | string = '';
   if (mom) {
     hero = heroBlock(mom.delta, mom.delta > 0 ? 'יותר מהחודש הקודם' : 'פחות מהחודש הקודם',
-      `${mom.curMonth} מול ${mom.prevMonth} · חודש אחד, לא מגמה`);
-    const movers = mom.deltas.slice(0, 3);
-    follow = h`<div class="card"><h2>${mom.delta > 0 ? 'מה הוביל את העלייה' : 'מה עשיתם אחרת'}</h2>
-      ${raw(movers.map(d => h`<div class="cat"><span class="name">${d.category}</span>
-        <span class="val ${d.delta > 0 ? 'delta-pos' : 'delta-neg'}">${fmt(d.delta, { sign: true })}</span>
-        <span class="val sub">${fmt(d.cur)}</span></div>`).join(''))}</div>`;
+      `${mom.prevMonth} ← ${mom.curMonth} · חודש מול חודש, לא מגמה`);
+    const movers = mom.deltas.filter(d => Math.abs(d.delta) >= 100).slice(0, 3);
+    follow = h`<div class="card"><h2>השינויים הגדולים</h2>
+      ${movers.map(d => h`<div class="cat"><span class="name">${d.category}</span>
+        <span class="track"><span class="fill" style="inline-size:${Math.min(100, Math.round(Math.abs(d.delta) / Math.abs(movers[0].delta) * 100))}%;background:${d.delta > 0 ? 'var(--over)' : 'var(--under)'}"></span></span>
+        <span class="val ${d.delta > 0 ? 'delta-pos' : 'delta-neg'}">${fmt(d.delta, { sign: true })}</span></div>`)}</div>`;
   } else {
-    hero = h`<div class="hero"><div class="amount">${raw(escape(fmt(retro.net, { sign: true })))}</div>
+    hero = h`<div class="hero"><div class="amount">${escape(fmt(retro.net, { sign: true }))}</div>
       <div class="label">נשאר לכם השנה</div><div class="sub">עדיין אין חודשיים מלאים להשוואה</div></div>`;
   }
-  return page('ראשי', '/', h`<div class="card">${raw(hero)}${raw(chips)}</div>${raw(follow)}
-    <div class="card"><h2>12 חודשים</h2>${raw(monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense }))))}</div>`);
+  return page('ראשי', '/', h`<div class="card">${hero}${chips}</div>${follow}
+    <div class="card"><div class="card-head"><h2>12 חודשים</h2><span class="sub">הוצאה חודשית</span></div>
+      ${monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense })), thisMonth)}</div>`);
 }
 
 function retrospectScreen(): string {

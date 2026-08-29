@@ -12,12 +12,14 @@ export function heroBlock(delta: number, label: string, caveat: string): Html {
   </div>`;
 }
 
-export function monthBars(months: { m: string; expense: number }[]): Html {
+export function monthBars(months: { m: string; expense: number }[], partialMonth?: string): Html {
   const max = Math.max(...months.map(r => r.expense), 1);
-  return h`<div class="bars">${raw(months.map(r =>
-    `<div class="b" style="height:${Math.max(2, Math.round((r.expense / max) * 100))}%" data-v="${escape(fmt(r.expense))}"></div>`
-  ).join(''))}</div>
-  <div class="bar-labels">${raw(months.map(r => `<span>${escape(r.m.slice(5))}</span>`).join(''))}</div>`;
+  return h`<div class="bars">${raw(months.map(r => {
+    const partial = r.m === partialMonth;
+    return `<div class="b${partial ? ' partial' : ''}" style="height:${Math.max(3, Math.round((r.expense / max) * 100))}%" data-v="${escape(fmt(r.expense))}${partial ? ' · חלקי' : ''}"></div>`;
+  }).join(''))}</div>
+  <div class="bar-labels">${raw(months.map(r =>
+    `<span${r.m === partialMonth ? ' class="muted"' : ''}>${escape(r.m.slice(5))}</span>`).join(''))}</div>`;
 }
 
 export function catRows(mix: { category: string; total: number }[], max?: number): Html {

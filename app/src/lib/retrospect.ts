@@ -30,7 +30,10 @@ export function monthOverMonth(db: DatabaseSync) {
   const rows = db.prepare(`SELECT substr(booking_date,1,7) AS m, COALESCE(category,'אחר') AS category, SUM(-amount) AS total
     FROM transactions WHERE flow_class='expense' AND status != 'superseded'
     GROUP BY m, category ORDER BY m DESC`).all() as unknown as { m: string; category: string; total: number }[];
-  const months = [...new Set(rows.map(r => r.m))].sort().reverse();
+  // Exclude the in-progress calendar month: comparing a partial month against a full one
+  // makes everything look "down". Compare the last two COMPLETE months only.
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const months = [...new Set(rows.map(r => r.m))].filter(m => m < thisMonth).sort().reverse();
   if (months.length < 2) return null;
   const [cur, prev] = months;
   const get = (m: string) => Object.fromEntries(rows.filter(r => r.m === m).map(r => [r.category, r.total]));
