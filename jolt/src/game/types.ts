@@ -69,6 +69,22 @@ export interface GameState {
   mode: ModeId
   /** Commands answered correctly this run (issued includes misses). */
   correct: number
+  /** True when the last resolved command was answered inside the PERFECT band
+   *  (the first PERFECT_FRAC of its window). Inhibition commands are never
+   *  perfect — doing nothing has no timing to grade. */
+  lastPerfect: boolean
+  /** Live perfect-chain length. Builds on every perfect, passes THROUGH a
+   *  correctly-held inhibition command (neutral), breaks on a slow answer or
+   *  any miss. Pure state, so any renderer can draw it. */
+  chain: number
+  /** Longest perfect chain this run. */
+  bestChain: number
+  /** Total perfects this run. */
+  perfects: number
+  /** Cumulative score after each resolved command, in resolution order —
+   *  trace[i] is the score once the (i+1)th command resolved. The ghost pacer
+   *  races the stored trace of your best run against this live one. */
+  trace: number[]
 }
 
 export interface RunReport {
@@ -85,6 +101,10 @@ export interface RunReport {
   deathAtIssued: number
   /** Window length at the moment of death — the fairness signal. */
   deathWindowMs: number
+  /** Commands answered inside the Perfect band this run. */
+  perfects: number
+  /** Longest perfect chain this run. */
+  bestChain: number
 }
 
 export const START_LIVES = 3

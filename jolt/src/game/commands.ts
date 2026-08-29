@@ -107,6 +107,17 @@ const FLOOR_WINDOW = 264      // just above an exceptional human's ~250ms reacti
  *  land inside ~250ms), short enough that patience always wins. */
 const INHIBIT_WINDOW = 200
 
+/** The PERFECT band: answering inside the first 30% of a command's window is a
+ *  Perfect — the skill layer the score already rewarded but the player could
+ *  never see. 30% of the opening 1760ms tap is ~528ms: a real target from
+ *  command one, and by the mid-game the band is tighter than an exceptional
+ *  human's reaction time — perfection gets earned, then priced out, exactly
+ *  like a rhythm game's judgement windows. The band is a fraction of the SAME
+ *  window the ramp already sets: it never touches window sizes or death rules,
+ *  so every fairness invariant holds untouched. Inhibition commands have no
+ *  band — doing nothing has no timing. */
+export const PERFECT_FRAC = 0.3
+
 /** The ramp, as control points (commands issued → base window ms), linearly
  *  interpolated. Shaped so the window crosses each skill tier's reaction range
  *  in sequence: ~600ms around command 30 (casual wall), ~450ms around command

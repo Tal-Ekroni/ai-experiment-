@@ -23,6 +23,10 @@
  */
 import { Action, Command, GameState, ModeId } from './types'
 import { MODES, dailyKey, dailySeed } from './commands'
+import {
+  DuelChallenge, duelModeFor, duelUrl, dailyShareText, challengeShareText,
+  duelShareText,
+} from './duel'
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -136,7 +140,7 @@ function saveStats(s: Stats): void {
 }
 
 /** The daily-challenge record: one scored attempt per calendar day. */
-interface DailyRec {
+export interface DailyRec {
   /** Last day a daily was played ('' = never). */
   day: string
   /** That day's score. */
@@ -166,6 +170,72 @@ function loadDaily(): DailyRec {
 }
 function saveDaily(d: DailyRec): void {
   try { localStorage.setItem(DAILY_KEY, JSON.stringify(d)) } catch { /* private mode */ }
+}
+
+/** Commit today's one attempt at run START — a mid-run quit must spend the
+ *  try, or retry-scumming beats the design. Pure so the streak chain and the
+ *  midnight edge are unit-testable without a clock. */
+export function commitDailyStart(rec: DailyRec, today: string, yesterday: string): DailyRec {
+  const chain = rec.day === yesterday ? rec.streak + 1 : 1
+  return {
+    day: today, score: 0, streak: chain,
+    bestStreak: Math.max(rec.bestStreak, chain),
+    played: rec.played + 1,
+  }
+}
+
+/** Land a daily score against the day the run STARTED, not the day it ended —
+ *  a run begun 23:59 that dies 00:01 still belongs to its own day. (The old
+ *  guard re-derived "today" at death and silently dropped exactly that run.) */
+export function settleDailyScore(rec: DailyRec, runDay: string, score: number): DailyRec {
+  if (rec.day !== runDay || score <= rec.score) return rec
+  return { ...rec, score }
+}
+
+/** Honest 1-based all-time rank of a new score against the stored top list.
+ *  A tie ranks BELOW the standing score — matching a record is not beating it
+ *  (the old `indexOf` gave a tying run the flattering rank). */
+export function rankOf(prevTop: number[], score: number): number {
+  let ahead = 0
+  for (const v of prevTop) if (v >= score) ahead++
+  return ahead + 1
+}
+
+// ---------------------------------------------------------------------------
+// Duels — one honest try per opened link, like the daily.
+// ---------------------------------------------------------------------------
+
+const DUELS_KEY = 'jolt.duels.v1'
+
+/** One settled (or spent) duel: OUR real score vs THEIR claimed score, keyed
+ *  by seed. `theirs` is a display-only claim — it never enters stats.
+ *  `obeyed`/`n` remember our run's shape so a later rebuttal share is honest. */
+interface DuelRec {
+  seed: number; mine: number; theirs: number; day: string; obeyed: number; n: number
+}
+
+function loadDuels(): DuelRec[] {
+  try {
+    const raw = localStorage.getItem(DUELS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((d): d is DuelRec => !!d && typeof d === 'object' &&
+        Number.isFinite(Number((d as DuelRec).seed)))
+      .map((d) => ({
+        seed: Number(d.seed) >>> 0,
+        mine: Math.max(0, Number(d.mine) || 0),
+        theirs: Math.max(0, Number(d.theirs) || 0),
+        day: typeof d.day === 'string' ? d.day : '',
+        obeyed: Math.max(0, Number(d.obeyed) || 0),
+        n: Math.max(1, Number(d.n) || 1),
+      }))
+      .slice(-80)
+  } catch { return [] }
+}
+function saveDuels(list: DuelRec[]): void {
+  try { localStorage.setItem(DUELS_KEY, JSON.stringify(list.slice(-80))) } catch { /* private */ }
 }
 
 function yesterdayKey(): string {
@@ -327,7 +397,9 @@ export interface ShellOptions {
   speak: (label: string) => void
 }
 
-type Screen = 'none' | 'home' | 'ask' | 'teach' | 'over' | 'paused' | 'help' | 'stats'
+type Screen =
+  | 'none' | 'home' | 'ask' | 'teach' | 'over' | 'paused' | 'help' | 'stats'
+  | 'duel'
 
 interface OverData {
   score: number; bestStreak: number; issued: number; runtimeMs: number
@@ -387,6 +459,22 @@ export class Shell {
   /** The best score at the moment the current run began — the chase target. */
   private chaseBest = 0
   private bestToastDone = true
+  /** Seed of the run currently playing (or just ended) — a challenge link
+   *  needs it to reproduce the exact sequence. */
+  private runSeed = 0
+  /** dailyKey() at the moment the run BEGAN. The daily record binds to this,
+   *  never to a re-derived "today" — see settleDailyScore. */
+  private runDay = ''
+  /** The inbound challenge being offered / played / just settled. */
+  private duelCh: DuelChallenge | null = null
+  /** The accept tap routed into the motion-ask flow — consume on beginRun. */
+  private pendingDuel = false
+  /** The current run is a duel run (its result never touches mode records). */
+  private duelActive = false
+  /** Played/spent duels, keyed by seed — the one-try-per-link gate. */
+  private duels: DuelRec[] = []
+  /** What the visible over screen shows — feeds the share/challenge buttons. */
+  private lastRun: { score: number; correct: number; issued: number; mode: ModeId } | null = null
 
   constructor(opts: ShellOptions) {
     this.opts = opts
@@ -394,6 +482,7 @@ export class Shell {
     this.meta = loadMeta()
     this.stats = loadStats()
     this.daily = loadDaily()
+    this.duels = loadDuels()
     this.touchDevice = typeof navigator !== 'undefined' &&
       (('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0)
 
@@ -605,8 +694,9 @@ export class Shell {
       this.clock.hidden = true
     }
     // The daily score persists as it grows, so a crash or reload mid-run
-    // keeps what was actually earned rather than zeroing the day.
-    if (s.mode === 'daily' && s.score > this.daily.score && this.daily.day === dailyKey()) {
+    // keeps what was actually earned rather than zeroing the day. Bound to
+    // the day the run STARTED, so crossing midnight mid-run keeps counting.
+    if (s.mode === 'daily' && s.score > this.daily.score && this.daily.day === this.runDay) {
       this.daily.score = s.score
       saveDaily(this.daily)
     }
@@ -621,10 +711,45 @@ export class Shell {
     const today = dailyKey()
     const st = this.stats
 
+    // --- a duel run: real play, but its score never enters the mode
+    // records — a duel replays a KNOWN sequence, and known-sequence scores
+    // must not be able to overwrite blind-run bests (and the challenger's
+    // claim, being forgeable, never enters anything at all).
+    if (this.duelActive) {
+      st.obeyed += Math.max(0, data.correct ?? 0)
+      st.runs++
+      if (st.lastDay !== today) { st.lastDay = today; st.days++ }
+      if (data.bestStreak > st.bestStreak) st.bestStreak = data.bestStreak
+      saveStats(st)
+      this.meta.games++
+      if (data.bestStreak > this.meta.bestStreak) this.meta.bestStreak = data.bestStreak
+      saveMeta(this.meta)
+      const ch = this.duelCh
+      if (ch) {
+        const rec = this.duels.find((d) => d.seed === ch.seed)
+        if (rec && data.score >= rec.mine) {
+          rec.mine = data.score
+          rec.obeyed = Math.max(0, data.correct ?? 0)
+          rec.n = Math.max(1, data.issued)
+          saveDuels(this.duels)
+        }
+      }
+      if (!this.enabled) return
+      if (this.overTimer !== null) clearTimeout(this.overTimer)
+      this.overTimer = window.setTimeout(() => {
+        this.overTimer = null
+        this.showDuelOver(data)
+      }, 950)
+      return
+    }
+
     // --- context, before recording -------------------------------------
     const prevBest = st.best[mode] || 0
     const prevToday = st.todayDay === today ? (st.todayBest[mode] || 0) : 0
     const newBest = data.score > prevBest
+    // Honest rank: computed against the list as it stood, so a tie reads as
+    // "matched", never as the standing score's own rank.
+    const rank = rankOf(st.top[mode], data.score)
 
     // --- lifetime stats -------------------------------------------------
     st.obeyed += Math.max(0, data.correct ?? 0)
@@ -635,21 +760,18 @@ export class Shell {
     if (st.todayDay !== today) { st.todayDay = today; st.todayBest = zeroPerMode() }
     if (data.score > st.todayBest[mode]) st.todayBest[mode] = data.score
     if (newBest) st.best[mode] = data.score
-    const top = [...st.top[mode], data.score].sort((a, b) => b - a)
-    const rank = top.indexOf(data.score) + 1
-    st.top[mode] = top.slice(0, 10)
+    st.top[mode] = [...st.top[mode], data.score].sort((a, b) => b - a).slice(0, 10)
     saveStats(st)
     if (mode === 'classic') recordScore(data.score)   // keep the legacy key true
 
     // --- the daily record: the attempt was committed at run START (so
-    // quitting mid-run cannot un-spend it); here the final score lands.
+    // quitting mid-run cannot un-spend it); here the final score lands,
+    // against the day the run STARTED — crossing midnight loses nothing.
     let dailyStreak = 0
-    if (mode === 'daily' && this.daily.day === today) {
+    if (mode === 'daily' && this.daily.day === this.runDay) {
       dailyStreak = this.daily.streak
-      if (data.score > this.daily.score) {
-        this.daily.score = data.score
-        saveDaily(this.daily)
-      }
+      const settled = settleDailyScore(this.daily, this.runDay, data.score)
+      if (settled !== this.daily) { this.daily = settled; saveDaily(this.daily) }
     }
 
     this.meta.games++
@@ -770,6 +892,11 @@ export class Shell {
 
   private showOver(data: OverData, ctx: OverContext): void {
     const mode: ModeId = data.mode ?? 'classic'
+    // Whatever this screen shows is what the share/challenge buttons copy.
+    this.lastRun = {
+      score: data.score, correct: data.correct ?? data.issued,
+      issued: Math.max(1, data.issued), mode,
+    }
     const modeName = MODES[mode].label
     const completed = !!data.completed
     const secs = Math.max(1, Math.round(data.runtimeMs / 1000))
@@ -827,6 +954,7 @@ export class Shell {
           <div class="jsh-play jsh-pulse">SEE YOU TOMORROW — TAP FOR MENU</div>
           <div class="jsh-row">
             <button class="jsh-btn" data-act="share">COPY RESULT</button>
+            <button class="jsh-btn" data-act="challenge">CHALLENGE A FRIEND</button>
           </div>
         </div>`)
       this.wireButtons()
@@ -850,12 +978,143 @@ export class Shell {
         <div class="jsh-play jsh-pulse">TAP TO GO AGAIN</div>
         ${dailyNudge}
         <div class="jsh-row">
+          <button class="jsh-btn" data-act="challenge">CHALLENGE A FRIEND</button>
           <button class="jsh-btn" data-act="menu">MENU</button>
         </div>
       </div>`)
     this.wireButtons()
     this.overRevealAt = performance.now()
     this.countUp(data.score)
+  }
+
+  // ------------------------------------------------------------------ duels
+
+  /** An inbound challenge link landed. Called by main.ts at boot, INSTEAD of
+   *  showHome, only after decodeDuel validated every parameter. */
+  offerDuel(ch: DuelChallenge): void {
+    this.duelCh = ch
+    const rec = this.duels.find((d) => d.seed === ch.seed)
+    if (rec && ch.score !== rec.theirs) {
+      // A fresh claim on a seed we already played (the return volley coming
+      // home) — remember their latest claim so the rebuttal stays current.
+      rec.theirs = ch.score
+      saveDuels(this.duels)
+    }
+    this.showDuelCard()
+  }
+
+  /** The challenge card: the claim, the terms, one try — or, if this link's
+   *  seed was already spent, the settled head-to-head. */
+  private showDuelCard(): void {
+    const ch = this.duelCh
+    if (!ch) { this.showHome(); return }
+    const rec = this.duels.find((d) => d.seed === ch.seed)
+    const modeName = MODES[ch.mode].label
+    if (rec) {
+      // Already settled: this seed has been played (or the try was spent).
+      const verdict = rec.mine > ch.score ? 'YOU HOLD THIS ONE'
+        : rec.mine < ch.score ? 'THEY HOLD THIS ONE' : 'DEAD HEAT'
+      this.show('duel', `
+        <div class="jsh-wrap jsh-ground jsh-in">
+          <div class="jsh-card">
+            <div class="jsh-pill" style="color:#c9a2ff;border-color:#c9a2ff55">DUEL SETTLED</div>
+            <div class="jsh-h">${verdict}</div>
+            <div class="jsh-vs"><span>${rec.mine}<i>YOU</i></span><b>·</b><span>${ch.score}<i>THEY CLAIM</i></span></div>
+            <div class="jsh-p">This sequence has been run — one try per challenge,
+              and it’s spent. Send your side back, or start a fresh run and fire
+              a new challenge from its game-over screen.</div>
+            <div class="jsh-row">
+              <button class="jsh-btn jsh-pri" data-act="rebuttal">COPY YOUR REPLY</button>
+              <button class="jsh-btn" data-act="menu">MENU</button>
+            </div>
+          </div>
+        </div>`)
+      this.wireButtons()
+      return
+    }
+    this.show('duel', `
+      <div class="jsh-wrap jsh-ground jsh-in">
+        <div class="jsh-card">
+          <div class="jsh-pill" style="color:#c9a2ff;border-color:#c9a2ff55">◆ DUEL ◆</div>
+          <div class="jsh-h">SOMEONE CLAIMS ${ch.score}</div>
+          <div class="jsh-p">On this exact sequence — ${ch.commands} command${
+            ch.commands === 1 ? '' : 's'}, ${modeName} rules. You’ll face the
+            identical run, same speed, same order. Their number is their claim;
+            yours will be earned.</div>
+          <div class="jsh-chip jsh-daychip">ONE TRY · NO WARM-UP</div>
+          <button class="jsh-btn jsh-pri" data-act="duel-accept">TAKE THE DUEL</button>
+          <button class="jsh-btn" data-act="menu">NOT NOW — MENU</button>
+        </div>
+      </div>`)
+    this.wireButtons()
+  }
+
+  /** The head-to-head after a duel run — and the return volley. */
+  private showDuelOver(data: OverData): void {
+    const ch = this.duelCh
+    if (!ch) { this.showOverFallback(data); return }
+    this.lastRun = {
+      score: data.score, correct: data.correct ?? data.issued,
+      issued: Math.max(1, data.issued), mode: ch.mode,
+    }
+    const mine = data.score
+    const win = mine > ch.score
+    const tie = mine === ch.score
+    const title = win ? 'DUEL — YOU TAKE IT' : tie ? 'DUEL — DEAD HEAT' : 'DUEL — THEY HOLD'
+    const titleColor = win ? '#7defb0' : tie ? '#ffd76b' : '#ff8b93'
+    // A completed zen duel has no killer — the clock simply ran out.
+    const killer = !data.completed && data.deathLabel
+      ? `<div class="jsh-cause">${
+          data.deathInhibit ? 'YOU MOVED — ' + data.deathLabel
+          : data.deathCause === 'timeout' ? 'TOO SLOW — ' + data.deathLabel
+          : 'WRONG MOVE — ' + data.deathLabel}</div>`
+      : ''
+    const margin = win ? `AHEAD BY ${mine - ch.score}` : tie ? 'NOT A POINT IN IT'
+      : `${ch.score - mine} SHORT OF THE CLAIM`
+    this.show('over', `
+      <div class="jsh-wrap jsh-deep jsh-in">
+        <div class="jsh-kick" style="color:${titleColor}">${title}</div>
+        ${killer}
+        <div class="jsh-score${win ? ' jsh-gold' : ''}">0</div>
+        <div class="jsh-vs"><span>${mine}<i>YOU</i></span><b>·</b><span>${ch.score}<i>THEY CLAIM</i></span></div>
+        <div class="jsh-chip">${margin}</div>
+        <div class="jsh-stats">
+          <span>×${data.bestStreak}<i>TOP STREAK</i></span>
+          <span>${data.correct ?? data.issued}<i>OBEYED</i></span>
+          <span>${Math.max(1, Math.round(data.runtimeMs / 1000))}s<i>SURVIVED</i></span>
+        </div>
+        <div class="jsh-play jsh-pulse">${win ? 'SEND IT BACK — TAP FOR MENU' : 'TAP FOR MENU'}</div>
+        <div class="jsh-row">
+          <button class="jsh-btn jsh-pri" data-act="rebuttal">SEND THE REBUTTAL</button>
+          <button class="jsh-btn" data-act="menu">MENU</button>
+        </div>
+      </div>`)
+    this.wireButtons()
+    this.overRevealAt = performance.now()
+    this.countUp(mine)
+  }
+
+  /** A duel over-screen with no challenge in hand (should not happen) —
+   *  degrade to the plain over screen rather than a blank layer. */
+  private showOverFallback(data: OverData): void {
+    this.showOver(data, {
+      newBest: false, rank: 99, prevBest: 0, prevToday: 0, modeRuns: 1, dailyStreak: 0,
+    })
+  }
+
+  /** Where challenge links point: this page, stripped of query and hash. */
+  private pageBase(): string {
+    try { return location.origin + location.pathname } catch { return '' }
+  }
+
+  /** Copy to the clipboard with an honest fallback: if the clipboard is
+   *  unavailable the text itself becomes the toast, so nothing is lost. */
+  private copyText(text: string, okMsg: string): void {
+    try {
+      void navigator.clipboard.writeText(text)
+        .then(() => this.toast(okMsg))
+        .catch(() => this.toast(text.split('\n')[0]))
+    } catch { this.toast(text.split('\n')[0]) }
   }
 
   /** Lifetime stats — the visible shape of every run ever played. */
@@ -953,6 +1212,7 @@ export class Shell {
     else if (name === 'paused') this.showPaused()
     else if (name === 'over') {
       this.runMode = 'classic'
+      this.runSeed = 424242
       this.showOver({
         score: 487, bestStreak: 12, issued: 34, runtimeMs: 58200,
         deathLabel: 'TWIST IT', deathCause: 'timeout', deathInhibit: false,
@@ -960,6 +1220,7 @@ export class Shell {
       }, { newBest: false, rank: 4, prevBest: 1240, prevToday: 0, modeRuns: 12, dailyStreak: 0 })
     } else if (name === 'over-best') {
       this.runMode = 'classic'
+      this.runSeed = 424242
       this.showOver({
         score: 1240, bestStreak: 21, issued: 61, runtimeMs: 84100,
         deathLabel: 'DO NOTHING', deathCause: 'wrong', deathInhibit: true,
@@ -967,6 +1228,7 @@ export class Shell {
       }, { newBest: true, rank: 1, prevBest: 980, prevToday: 0, modeRuns: 12, dailyStreak: 0 })
     } else if (name === 'over-daily') {
       this.runMode = 'daily'
+      this.runSeed = 424242
       this.showOver({
         score: 640, bestStreak: 14, issued: 41, runtimeMs: 63400,
         deathLabel: 'FLIP IT', deathCause: 'timeout', deathInhibit: false,
@@ -978,6 +1240,31 @@ export class Shell {
         score: 720, bestStreak: 18, issued: 52, runtimeMs: 90000,
         mode: 'zen', correct: 47, completed: true,
       }, { newBest: true, rank: 1, prevBest: 610, prevToday: 0, modeRuns: 3, dailyStreak: 0 })
+    }
+    else if (name === 'duel') {
+      // A fresh inbound challenge card.
+      this.duelCh = { seed: 424242, score: 487, commands: 34, mode: 'classic' }
+      this.duels = this.duels.filter((d) => d.seed !== 424242)
+      this.showDuelCard()
+    } else if (name === 'duel-settled') {
+      // The same link reopened after the try was spent.
+      this.duelCh = { seed: 424243, score: 487, commands: 34, mode: 'classic' }
+      if (!this.duels.some((d) => d.seed === 424243)) {
+        this.duels.push({
+          seed: 424243, mine: 512, theirs: 487, day: dailyKey(), obeyed: 43, n: 46,
+        })
+      }
+      this.showDuelCard()
+    } else if (name === 'over-duel') {
+      // The head-to-head after a duel run.
+      this.duelCh = { seed: 424244, score: 487, commands: 34, mode: 'classic' }
+      this.duelActive = true
+      this.runSeed = 424244
+      this.showDuelOver({
+        score: 512, bestStreak: 15, issued: 46, runtimeMs: 66000,
+        deathLabel: 'PINCH IT', deathCause: 'timeout', deathInhibit: false,
+        mode: 'classic', correct: 43,
+      })
     }
     else if (name === 'teach-none') {
       this.teach = { key: 'none', cmd: { action: 'none', label: 'DO NOTHING', windowMs: 200, inhibit: true }, timer: null }
@@ -1005,8 +1292,11 @@ export class Shell {
         break
       case 'over':
         if (now - this.overRevealAt < 350) return   // last-gasp flail guard
-        // The daily attempt is spent — its over screen taps back to the menu.
-        if (this.runMode === 'daily') {
+        // The daily attempt — and a duel's one try — are spent: their over
+        // screens tap back to the menu, never into a replay.
+        if (this.runMode === 'daily' || this.duelActive) {
+          this.duelActive = false
+          this.duelCh = null
           this.hide()
           this.opts.onHome()
           this.showHome()
@@ -1026,6 +1316,30 @@ export class Shell {
   /** Every run start funnels through here so the chase target is armed. A tiny
    *  best is not worth a mid-run interruption. */
   private beginRun(mode: ModeId): void {
+    // A pending duel takes the run over: known seed, one committed try.
+    const duel = this.pendingDuel ? this.duelCh : null
+    this.pendingDuel = false
+    this.duelActive = !!duel
+    if (duel) {
+      if (this.duels.some((d) => d.seed === duel.seed)) {
+        // The gate re-checked at the last moment (e.g. motion-ask detour).
+        this.duelActive = false
+        this.showDuelCard()
+        return
+      }
+      // Commit the try NOW, like the daily: quitting mid-run spends it.
+      this.duels.push({
+        seed: duel.seed, mine: 0, theirs: duel.score, day: dailyKey(), obeyed: 0, n: 1,
+      })
+      saveDuels(this.duels)
+      this.runMode = duel.mode
+      this.runDay = dailyKey()
+      this.runSeed = duel.seed
+      this.bestToastDone = true   // a duel run never claims "new best"
+      this.hide()
+      this.opts.onPlay(duel.mode, duel.seed)
+      return
+    }
     if (mode === 'daily') {
       const today = dailyKey()
       if (this.daily.day === today) {
@@ -1036,18 +1350,17 @@ export class Shell {
       }
       // Commit the attempt NOW: the sequence is public and seeded, so a
       // mid-run quit must spend the try, or retry-scumming beats the design.
-      const chain = this.daily.day === yesterdayKey() ? this.daily.streak + 1 : 1
-      this.daily = {
-        day: today, score: 0, streak: chain,
-        bestStreak: Math.max(this.daily.bestStreak, chain),
-        played: this.daily.played + 1,
-      }
+      this.daily = commitDailyStart(this.daily, today, yesterdayKey())
       saveDaily(this.daily)
     }
     this.runMode = mode
+    // Bind the run's daily identity at START: the record it settles into is
+    // this day's, even if the run itself outlives the local midnight.
+    this.runDay = dailyKey()
     this.chaseBest = this.stats.best[mode] || 0
     this.bestToastDone = this.chaseBest < 100
-    const seed = mode === 'daily' ? dailySeed() : (Math.random() * 1e9) | 0
+    const seed = mode === 'daily' ? dailySeed(this.runDay) : ((Math.random() * 1e9) | 0) || 1
+    this.runSeed = seed
     this.hide()
     this.opts.onPlay(mode, seed)
   }
@@ -1122,15 +1435,67 @@ export class Shell {
         break
       case 'stats': this.showStats(); break
       case 'share': {
-        // The daily's bragging line — local clipboard only, nothing sent anywhere.
+        // The daily's spoiler-free grid — local clipboard only, nothing sent
+        // anywhere. The bar shows how deep the run got, never which commands.
         const d = this.daily
-        const line = `JOLT DAILY ${d.day} · ${d.score} PTS` +
-          (d.streak > 1 ? ` · STREAK ${d.streak}` : '')
-        try {
-          void navigator.clipboard.writeText(line)
-            .then(() => this.toast('RESULT COPIED — PASTE IT ANYWHERE'))
-            .catch(() => this.toast(line))
-        } catch { this.toast(line) }
+        const text = dailyShareText({
+          day: d.day || dailyKey(),
+          score: d.score,
+          correct: this.lastRun ? this.lastRun.correct : 0,
+          streak: d.streak,
+        })
+        this.copyText(text, 'RESULT COPIED — PASTE IT ANYWHERE')
+        break
+      }
+      case 'challenge': {
+        // Copy a beat-my-run link for the run on this screen. The seed
+        // reproduces the exact sequence; the score travels as a claim.
+        const run = this.lastRun
+        if (!run || this.runSeed < 1) { this.toast('NOTHING TO CHALLENGE YET'); break }
+        const ch: DuelChallenge = {
+          seed: this.runSeed >>> 0, score: run.score,
+          commands: run.issued, mode: duelModeFor(run.mode),
+        }
+        // Remember our side, so this seed's return volley lands as a settled
+        // head-to-head instead of asking us to replay a spent sequence.
+        const rec = this.duels.find((x) => x.seed === ch.seed)
+        if (rec) {
+          if (run.score >= rec.mine) {
+            rec.mine = run.score; rec.obeyed = run.correct; rec.n = run.issued
+          }
+        } else {
+          this.duels.push({
+            seed: ch.seed, mine: run.score, theirs: 0, day: dailyKey(),
+            obeyed: run.correct, n: run.issued,
+          })
+        }
+        saveDuels(this.duels)
+        const text = challengeShareText({
+          score: run.score, correct: run.correct, url: duelUrl(this.pageBase(), ch),
+        })
+        this.copyText(text, 'CHALLENGE COPIED — SEND IT TO SOMEONE')
+        break
+      }
+      case 'rebuttal': {
+        // The return volley: same seed, OUR score baked in.
+        const ch = this.duelCh
+        if (!ch) break
+        const rec = this.duels.find((d) => d.seed === ch.seed)
+        const mine = rec ? rec.mine : 0
+        const url = duelUrl(this.pageBase(), {
+          seed: ch.seed, score: mine, commands: rec ? rec.n : 1, mode: ch.mode,
+        })
+        const text = duelShareText({
+          mine, theirs: ch.score, correct: rec ? rec.obeyed : 0, url,
+        })
+        this.copyText(text, 'REBUTTAL COPIED — SEND IT BACK')
+        break
+      }
+      case 'duel-accept': {
+        if (!this.duelCh) { this.showHome(); break }
+        this.opts.onPrime()
+        this.pendingDuel = true
+        this.startFlow(this.duelCh.mode)
         break
       }
       case 'help': this.showHelp(); break
@@ -1141,6 +1506,8 @@ export class Shell {
         this.toast('TUTORIAL RESET — IT WILL TEACH AGAIN')
         break
       case 'menu':
+        this.duelActive = false
+        this.duelCh = null
         this.hide()
         this.opts.onHome()
         this.showHome()
@@ -1277,6 +1644,11 @@ export class Shell {
 .jsh-score.jsh-gold{color:#ffd76b;text-shadow:0 0 44px rgba(255,205,90,.55)}
 .jsh-best{font-weight:800;font-size:clamp(15px,4vw,22px);letter-spacing:.26em;text-indent:.26em;
   color:#ffd76b;text-shadow:0 0 22px rgba(255,205,90,.6)}
+.jsh-vs{display:flex;gap:18px;align-items:baseline;justify-content:center;font-weight:800;
+  font-size:clamp(30px,9vw,52px);line-height:1}
+.jsh-vs span{display:flex;flex-direction:column;align-items:center;gap:5px}
+.jsh-vs b{color:#7c89b4;font-size:clamp(18px,5vw,28px)}
+.jsh-vs i{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.24em;color:#8b98c4}
 .jsh-stats{display:flex;gap:26px;justify-content:center;font-weight:800;
   font-size:clamp(18px,5vw,28px)}
 .jsh-stats span{display:flex;flex-direction:column;gap:4px}

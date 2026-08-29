@@ -3,6 +3,7 @@ import { Renderer } from './game/render'
 import { Input } from './game/input'
 import { Sound } from './game/audio'
 import { Shell, bestScore } from './game/shell'
+import { decodeDuel } from './game/duel'
 import { Action, ModeId } from './game/types'
 import { intensity, MODES } from './game/commands'
 
@@ -20,7 +21,17 @@ const renderer = new Renderer(stage)
 const sound = new Sound()
 let engine = new Engine(1)
 
-const headless = new URLSearchParams(location.search).has('headless')
+const bootParams = new URLSearchParams(location.search)
+const headless = bootParams.has('headless')
+// An inbound beat-my-run challenge link (?duel=<seed>&s=<score>&n=<commands>).
+// Params are hostile until proven: anything malformed decodes to null and the
+// page boots to the normal home screen. Harness runs ignore duels entirely.
+const inboundDuel = headless ? null : decodeDuel(bootParams)
+if (inboundDuel) {
+  // Consume the link: the address bar goes clean so a reload is a normal
+  // visit — the one-try gate itself lives in the shell's duel record.
+  try { history.replaceState(null, '', location.pathname) } catch { /* sandboxed */ }
+}
 let running = !headless
 /** issued-index of the last announced command — labels can legitimately repeat
  *  ("TAP IT. TAP IT."), so the index, not the text, decides re-announcement. */
@@ -151,7 +162,10 @@ function tick(now: number) {
 }
 requestAnimationFrame(tick)
 renderer.sync(engine.state)
-if (!headless) shell.showHome()
+if (!headless) {
+  if (inboundDuel) shell.offerDuel(inboundDuel)
+  else shell.showHome()
+}
 
 // --- headless hooks --------------------------------------------------------
 // Screenshots need a posed frame; fairness needs simulated runs. Both are exposed

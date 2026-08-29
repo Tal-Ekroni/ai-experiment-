@@ -3,12 +3,33 @@
  *  playtester run thousands of runs headlessly and measure fairness. */
 import { Action, GameState, ModeConfig, RunReport } from './types'
 import { makeRng, Rng } from './rng'
-import { MODES, nextCommand, intensity } from './commands'
+import { MODES, nextCommand, intensity, PERFECT_FRAC } from './commands'
 
 /** Pause between a resolved command and the next one, so the player can breathe.
  *  Shrinks as intensity rises. */
 const RESOLVE_MS = 420
 const RESOLVE_FLOOR = 140
+
+/** Bonus points for the Nth consecutive Perfect. Base points are UNTOUCHED —
+ *  perfects are a visible extra stream on top, so historical scores stay
+ *  comparable in kind and the bots can quantify exactly what the layer adds.
+ *  Builds linearly and caps: chain 1 → +8, chain 15+ → +50 per command
+ *  (vs a 10-30pt base), so a sustained chain roughly doubles the value of a
+ *  command — Guitar-Hero-multiplier territory, without letting one lucky hit
+ *  outweigh survival. */
+export function perfectBonus(chain: number): number {
+  return 5 + 3 * Math.min(Math.max(1, chain), 15)
+}
+
+/** Ghost-pacer replay: the recorded run's score after `resolved` commands had
+ *  resolved (trace[i] = score once the (i+1)th command resolved). Past the end
+ *  of the trace the ghost is dead and its score frozen — exactly like driving
+ *  past the spot where the ghost car crashed. Pure, so the renderer and the
+ *  node tests share one definition. */
+export function ghostScoreAt(trace: number[], resolved: number): number {
+  if (resolved <= 0 || trace.length === 0) return 0
+  return trace[Math.min(resolved, trace.length) - 1]
+}
 
 export class Engine {
   state: GameState
@@ -28,6 +49,7 @@ export class Engine {
       phase: 'idle', command: null, elapsed: 0, score: 0, streak: 0, bestStreak: 0,
       lives: mode.lives, issued: 0, runtime: 0, lastResult: null, seed,
       mode: mode.id, correct: 0, rampIssued: mode.rampOffset,
+      lastPerfect: false, chain: 0, bestChain: 0, perfects: 0, trace: [],
     }
   }
 
@@ -67,6 +89,23 @@ export class Engine {
     // Reward speed: points scale with how much of the window was left.
     const left = s.command ? Math.max(0, 1 - s.elapsed / s.command.windowMs) : 0
     s.score += Math.round(10 + left * 20)
+    // PERFECT layer: inside the first PERFECT_FRAC of the window (boundary
+    // inclusive — landing exactly ON the band edge counts). Inhibition
+    // commands are never graded: their "success" is the window lapsing, so a
+    // held DO NOTHING passes the chain through untouched instead of breaking
+    // it — an unbeatable-by-timing command must never cost a timing chain.
+    const perfect = !!s.command && !s.command.inhibit &&
+      s.elapsed <= s.command.windowMs * PERFECT_FRAC
+    s.lastPerfect = perfect
+    if (perfect) {
+      s.chain++
+      s.bestChain = Math.max(s.bestChain, s.chain)
+      s.perfects++
+      s.score += perfectBonus(s.chain)
+    } else if (s.command && !s.command.inhibit) {
+      s.chain = 0                       // a slow (merely correct) answer breaks it
+    }
+    s.trace.push(s.score)
     s.phase = 'resolved'
     this.resolveLeft = this.resolveGap()
   }
@@ -75,6 +114,9 @@ export class Engine {
     const s = this.state
     s.lastResult = cause
     s.streak = 0
+    s.lastPerfect = false
+    s.chain = 0                          // any miss breaks the perfect chain
+    s.trace.push(s.score)                // the fatal command still lands in the trace
     if (this.mode.lifeLoss) s.lives--
     this.deathWindowMs = s.command ? s.command.windowMs : 0
     if (this.mode.lifeLoss && s.lives <= 0) { s.phase = 'over'; return }
@@ -131,6 +173,8 @@ export class Engine {
       deathCause: died ? (s.lastResult === 'wrong' ? 'wrong' : 'timeout') : 'alive',
       deathAtIssued: died ? s.issued : -1,
       deathWindowMs: Math.round(this.deathWindowMs),
+      perfects: s.perfects,
+      bestChain: s.bestChain,
     }
   }
 }

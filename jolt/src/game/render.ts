@@ -27,8 +27,9 @@
  *  PERFORMANCE: all particles come from fixed preallocated pools (swap-kill,
  *  zero allocation per frame); DOM text/style writes are cached and only
  *  touched on change; ambient chrome is CSS-composited (transform/opacity). */
-import { GameState } from './types'
-import { intensity } from './commands'
+import { GameState, ModeId } from './types'
+import { intensity, PERFECT_FRAC } from './commands'
+import { ghostScoreAt } from './engine'
 
 type Family = 'touch' | 'motion' | 'inhibit'
 
@@ -55,6 +56,39 @@ const INHIBIT_COLOR = '#66ccff'
 const TAU = Math.PI * 2
 const MAX_POOL = 150    // sparks + embers, preallocated
 const MAX_MOTES = 34    // always-on ambient field, preallocated
+
+/** PERFECT layer look: gold, distinct from every command family hue. */
+const PERFECT_HUE = 48
+
+/** Ghost pacer persistence: the per-command score trace of your best run per
+ *  mode, stored by the renderer (pure engine state in, localStorage out — the
+ *  engine itself stays storage-free for the headless harnesses). */
+const GHOST_KEY = 'jolt.ghost.v1'
+interface GhostRec { score: number; trace: number[] }
+
+function loadGhosts(): Partial<Record<ModeId, GhostRec>> {
+  try {
+    const raw = localStorage.getItem(GHOST_KEY)
+    if (!raw) return {}
+    const m = JSON.parse(raw) as Record<string, unknown>
+    const out: Partial<Record<ModeId, GhostRec>> = {}
+    for (const k of ['classic', 'sudden', 'zen', 'daily'] as ModeId[]) {
+      const g = m && typeof m === 'object' ? (m as Record<string, unknown>)[k] : null
+      if (g && typeof g === 'object') {
+        const score = Number((g as Record<string, unknown>).score)
+        const tr = (g as Record<string, unknown>).trace
+        if (Number.isFinite(score) && score > 0 && Array.isArray(tr)) {
+          const trace = tr.map(Number).filter((n) => Number.isFinite(n) && n >= 0)
+          if (trace.length) out[k] = { score, trace }
+        }
+      }
+    }
+    return out
+  } catch { return {} }
+}
+function saveGhosts(g: Partial<Record<ModeId, GhostRec>>): void {
+  try { localStorage.setItem(GHOST_KEY, JSON.stringify(g)) } catch { /* private mode */ }
+}
 
 /** Visual energy 0..1. Re-anchored so a 30-command run sees a real arc:
  *  ~0.05 at command 1, ~0.2 at 6, ~0.35 at 12, ~0.7 at 30, saturating near 45.
@@ -92,6 +126,7 @@ export class Renderer {
   private label = document.createElement('div')      // THE command — always center
   private sub = document.createElement('div')        // verdict / score line
   private combo = document.createElement('div')      // streak counter, bottom center
+  private chainEl = document.createElement('div')    // perfect-chain counter, above combo
   private hud = document.createElement('div')
   private scoreEl = document.createElement('div')
   private livesEl = document.createElement('div')
@@ -112,6 +147,12 @@ export class Renderer {
   private freezeT = 0            // runtime at which the inhibit freeze began
   private wasFrozen = false
   private idleAnim: Animation | null = null
+  private pChain = 0             // previous frame's perfect chain, for break detection
+
+  // Ghost pacer: the best run's score trace for the mode being played.
+  private ghost: { score: number; trace: number[] } | null = null
+  private ghostMode: ModeId | null = null
+  private ghostBeaten = false
 
   // DOM write caches — touch the DOM only when a value actually changes
   private bgCache = ''
@@ -124,6 +165,7 @@ export class Renderer {
   private cGlyph = ''
   private cScore = ''
   private cCombo = ''
+  private cChain = ''
 
   // fixed particle pools — zero allocation per frame
   private pool: Particle[] = []
@@ -198,6 +240,14 @@ export class Renderer {
       'text-align:center;font-weight:800;opacity:0;will-change:transform;' +
       'font-size:clamp(18px,4.6vw,34px);transition:opacity .2s'
 
+    // Perfect-chain counter: a quiet gold line above the streak counter — the
+    // mastery ladder's rung count, never competing with the command label.
+    this.chainEl.style.cssText =
+      'position:absolute;bottom:calc(max(26px,env(safe-area-inset-bottom)) + clamp(34px,9vw,60px));' +
+      'left:0;right:0;text-align:center;font-weight:800;opacity:0;will-change:transform;' +
+      'font-size:clamp(13px,3.4vw,20px);letter-spacing:.22em;text-indent:.22em;' +
+      'transition:opacity .2s'
+
     this.hud.style.cssText =
       'position:absolute;top:max(18px,env(safe-area-inset-top));left:0;right:0;' +
       'display:flex;justify-content:space-between;align-items:center;padding:0 22px;' +
@@ -215,7 +265,7 @@ export class Renderer {
 
     this.shaker.append(this.aurora, this.halo, this.halo2, this.fx, this.vignette,
       this.flash, this.edgeL, this.edgeR, this.ring, this.glyph, this.kicker,
-      this.label, this.sub, this.combo, this.hud)
+      this.label, this.sub, this.combo, this.chainEl, this.hud)
     this.root.append(this.shaker)
     this.ctx = this.ring.getContext('2d')!
     this.fxCtx = this.fx.getContext('2d')!
@@ -242,6 +292,26 @@ export class Renderer {
     d.phase = s.phase
     d.issued = String(s.issued)
     d.action = s.command ? s.command.action : ''
+    d.chain = String(s.chain)
+    d.perfect = s.lastPerfect ? '1' : '0'
+
+    // Ghost pacer bookkeeping: arm the ghost when a run starts, bank the trace
+    // when one ends. Both keyed on phase transitions, so posed frames (which
+    // jump straight into 'awaiting') behave deterministically too.
+    if (s.phase === 'awaiting' && this.pPhase !== 'awaiting' && this.pPhase !== 'resolved') {
+      const g = loadGhosts()[s.mode]
+      this.ghost = g && g.score > 0 && g.trace.length ? g : null
+      this.ghostMode = s.mode
+      this.ghostBeaten = false
+    }
+    if (s.phase === 'over' && this.pPhase !== 'over' && s.trace.length && s.score > 0) {
+      const all = loadGhosts()
+      const prev = all[s.mode]
+      if (!prev || s.score > prev.score) {
+        all[s.mode] = { score: s.score, trace: s.trace.slice(0, 400) }
+        saveGhosts(all)
+      }
+    }
 
     const i = intensity(s.rampIssued)
     const e = energyOf(s.rampIssued, i)
@@ -262,6 +332,7 @@ export class Renderer {
     this.syncEdges(s, art, inhibit)
     this.syncHud(s, i, e)
     this.syncCombo(s, e)
+    this.syncChain(s, posed)
     this.detectEvents(s, art, posed)
     this.drawRing(s, e, art.hue, inhibit)
     if (posed) this.seedAmbient(e, i)
@@ -271,13 +342,14 @@ export class Renderer {
     this.pScore = s.score
     this.pPhase = s.phase
     this.pRuntime = s.runtime
+    this.pChain = s.chain
     if (s.command) this.pInhibit = s.command.inhibit
   }
 
   /** Kill CSS transitions for a posed frame so screenshots show final values. */
   private setSnap(posed: boolean): void {
     const els: HTMLElement[] = [this.sub, this.flash, this.vignette, this.combo,
-      this.edgeL, this.edgeR]
+      this.chainEl, this.edgeL, this.edgeR]
     for (let k = 0; k < this.livesEl.children.length; k++) {
       els.push(this.livesEl.children[k] as HTMLElement)
     }
@@ -447,6 +519,28 @@ export class Renderer {
     }
   }
 
+  /** Perfect-chain counter — a gold ladder rung count that burns hotter as the
+   *  chain grows, and falls away quietly the moment a slow answer breaks it. */
+  private syncChain(s: GameState, posed: boolean): void {
+    const show = s.chain >= 2 && (s.phase === 'awaiting' || s.phase === 'resolved')
+    const text = show ? `PERFECT ×${s.chain}` : this.cChain
+    if (text !== this.cChain) { this.cChain = text; this.chainEl.textContent = text }
+    this.chainEl.style.opacity = show ? '1' : '0'
+    if (show) {
+      const heat = Math.min(1, s.chain / 20)
+      this.chainEl.style.color = `hsl(${PERFECT_HUE - heat * 18} 100% ${74 - heat * 6}%)`
+      this.chainEl.style.textShadow =
+        `0 0 ${8 + heat * 20}px hsl(${PERFECT_HUE} 100% 60% / ${0.5 + heat * 0.4})`
+    } else if (this.pChain >= 3 && s.chain === 0 && s.lastResult === 'correct' &&
+               !posed && !reducedMotion()) {
+      // The chain broke on a merely-correct answer: a quiet fall, not a punch —
+      // the failure punch already owns real mistakes.
+      this.chainEl.animate(
+        [{ opacity: 1, transform: 'translateY(0)' }, { opacity: 0, transform: 'translateY(10px)' }],
+        { duration: 320, easing: 'ease-in' })
+    }
+  }
+
   // ------------------------------------------------------- one-shot reactions
   private detectEvents(s: GameState, art: { hue: number; glyph: string; fam: Family }, posed: boolean): void {
     const rm = reducedMotion() || posed
@@ -459,16 +553,33 @@ export class Renderer {
 
     const resolvedNow = s.phase !== this.pPhase && (s.phase === 'resolved' || s.phase === 'over')
     if (resolvedNow && s.lastResult === 'correct') {
-      // SUCCESS: flash + spark burst. A save with almost nothing left on the
-      // clock flashes hot orange and NAMES the margin — the near-miss is felt.
+      // SUCCESS: flash + spark burst. A PERFECT (inside the gold band) flashes
+      // gold and celebrates in proportion to the chain — a ×2 chain is a spark,
+      // a ×15 chain is an event. A save with almost nothing left on the clock
+      // flashes hot orange and NAMES the margin — the near-miss is felt.
       const cmd = s.command
       const margin = cmd ? Math.max(0, cmd.windowMs - s.elapsed) : 9999
       const close = !!cmd && !cmd.inhibit && (margin < 150 || margin < cmd.windowMs * 0.16)
-      this.flash.style.background = close ? 'rgba(255,176,64,.22)' : 'rgba(92,232,143,.15)'
+      const perfect = s.lastPerfect
+      this.flash.style.background =
+        perfect ? 'rgba(255,213,84,.20)'
+        : close ? 'rgba(255,176,64,.22)' : 'rgba(92,232,143,.15)'
       this.flash.style.opacity = '1'
       const milestone = s.streak > 0 && s.streak % 5 === 0
-      this.burst(milestone ? 46 : 14, milestone ? 48 : art.hue, milestone ? 3.4 : 2.2)
-      if (milestone && !rm) {
+      // Every 5th link of a perfect chain outranks the streak milestone — the
+      // chain is the rarer, harder thing, and it earns the bigger moment.
+      const chainMile = perfect && s.chain >= 5 && s.chain % 5 === 0
+      if (chainMile) this.burst(40 + Math.min(24, s.chain), PERFECT_HUE, 3.6)
+      else if (milestone) this.burst(46, 48, 3.4)
+      else if (perfect) this.burst(16 + Math.min(24, s.chain * 2), PERFECT_HUE, 2.8)
+      else this.burst(14, art.hue, 2.2)
+      if (chainMile && !rm) {
+        this.bloom(`PERFECT CHAIN ×${s.chain}`)
+        this.shockwave(PERFECT_HUE)
+        this.chainEl.animate(
+          [{ transform: 'scale(1)' }, { transform: 'scale(1.7)' }, { transform: 'scale(1)' }],
+          { duration: 380, easing: 'cubic-bezier(.2,1.6,.4,1)' })
+      } else if (milestone && !rm) {
         // STREAK MILESTONE: gold bloom — banner + wave + the counter slams.
         this.bloom(`STREAK ×${s.streak}`)
         this.shockwave(48)
@@ -476,17 +587,20 @@ export class Renderer {
           [{ transform: 'scale(1)' }, { transform: 'scale(1.8)' }, { transform: 'scale(1)' }],
           { duration: 380, easing: 'cubic-bezier(.2,1.6,.4,1)' })
       } else if (!rm) {
-        this.combo.animate(
+        const el = perfect && s.chain >= 2 ? this.chainEl : this.combo
+        el.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(1.22)' }, { transform: 'scale(1)' }],
           { duration: 200, easing: 'ease-out' })
       }
-      // Score pop + floater — only for a single command's worth of points.
+      // Score pop + floater — only for a single command's worth of points
+      // (base 10-30 plus a perfect bonus of at most 50).
       const gained = s.score - this.pScore
-      if (gained > 0 && gained <= 40 && !rm) {
+      if (gained > 0 && gained <= 80 && !rm) {
         this.scoreEl.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(1.35)' }, { transform: 'scale(1)' }],
           { duration: 220, easing: 'ease-out' })
-        if (close) this.floater(`+${gained} · ${Math.round(margin)}ms SAVE`, 'hsl(35 100% 66%)')
+        if (perfect) this.floater(`PERFECT +${gained}`, `hsl(${PERFECT_HUE} 100% 70%)`)
+        else if (close) this.floater(`+${gained} · ${Math.round(margin)}ms SAVE`, 'hsl(35 100% 66%)')
         else this.floater(`+${gained}`, `hsl(${art.hue} 90% 70%)`)
       }
     }
@@ -821,6 +935,10 @@ export class Renderer {
       c.shadowBlur = 0
     }
 
+    // Ghost pacer: the race against your best run, riding just outside the
+    // ring — periphery only, never near the command label.
+    this.drawGhost(s, baseR)
+
     if (s.phase === 'resolved') {
       // Verdict afterglow: the whole ring flashes the result color and fades —
       // the space between commands is a felt beat, not a blank.
@@ -877,11 +995,93 @@ export class Renderer {
     c.stroke()
     c.shadowBlur = 0
 
+    // PERFECT band: the first 30% of the window is a gold wedge on the ring,
+    // eaten live by the drain head — hit while any gold remains and the answer
+    // is a Perfect. Its glow decays as it is spent: the prize is visibly
+    // slipping away, which is the whole reason to hurry on an easy command.
+    const bandLo = 1 - PERFECT_FRAC
+    if (left > bandLo) {
+      const decay = (left - bandLo) / PERFECT_FRAC   // 1 fresh → 0 spent
+      c.lineWidth = lw
+      c.shadowBlur = 10 + decay * 8
+      c.shadowColor = `hsl(${PERFECT_HUE} 95% 60%)`
+      c.strokeStyle = `hsl(${PERFECT_HUE} 96% 64% / ${(0.5 + 0.42 * decay).toFixed(3)})`
+      c.beginPath()
+      c.arc(w / 2, w / 2, r, -Math.PI / 2 + bandLo * TAU, -Math.PI / 2 + left * TAU)
+      c.stroke()
+      c.shadowBlur = 0
+    }
+    // The band's boundary notch stays after the gold is spent — a fixed tick
+    // at the 30% mark, so the target line is learnable across commands.
+    const na = -Math.PI / 2 + bandLo * TAU
+    c.lineWidth = 3
+    c.strokeStyle = `hsl(${PERFECT_HUE} 90% 72% / ${left > bandLo ? '.9' : '.28'})`
+    c.beginPath()
+    c.moveTo(w / 2 + Math.cos(na) * (r - lw * 0.85), w / 2 + Math.sin(na) * (r - lw * 0.85))
+    c.lineTo(w / 2 + Math.cos(na) * (r + lw * 0.85), w / 2 + Math.sin(na) * (r + lw * 0.85))
+    c.stroke()
+
     // Bright head on the draining edge — the eye tracks a point, not an arc.
     const a = -Math.PI / 2 + left * TAU
     c.fillStyle = `hsl(${ringHue} 95% 78%)`
     c.beginPath()
     c.arc(w / 2 + Math.cos(a) * r, w / 2 + Math.sin(a) * r, lw * 0.62, 0, TAU)
+    c.fill()
+  }
+
+  /** GHOST PACER: one lap of the outer track = your best run's final score.
+   *  The dim gray dot is where that run's score stood after this many
+   *  commands (frozen at its crash site once your run outlives its trace);
+   *  the small colored dot is you — green when ahead, red when behind, with a
+   *  faint gap arc between the two. Complete the lap and the ghost is beaten:
+   *  the renderer says so once, then clears the periphery for the endgame.
+   *  Everything lives OUTSIDE the timer ring — the command label and the live
+   *  countdown stay untouched. */
+  private drawGhost(s: GameState, baseR: number): void {
+    const g = this.ghost
+    if (!g || this.ghostBeaten || this.ghostMode !== s.mode || g.score <= 0) return
+    if (s.phase !== 'awaiting' && s.phase !== 'resolved') return
+    const resolved = s.issued - (s.phase === 'awaiting' ? 1 : 0)
+    if (resolved > 0 && s.score >= g.score) {
+      // Past the ghost's death point — the race is won.
+      this.ghostBeaten = true
+      this.floater('GHOST DOWN', 'hsl(210 90% 78%)')
+      this.burst(20, 210, 2.6)
+      return
+    }
+    const gs = ghostScoreAt(g.trace, resolved)
+    const c = this.ctx
+    const w = this.ring.width
+    const track = baseR + 17
+    const yp = Math.min(1, s.score / g.score)
+    const gp = Math.min(1, gs / g.score)
+    const ahead = s.score >= gs
+    const ya = -Math.PI / 2 + yp * TAU
+    const ga = -Math.PI / 2 + gp * TAU
+    // The gap between the racers — the subtle ahead/behind cue.
+    if (Math.abs(yp - gp) > 0.004) {
+      c.lineWidth = 2.5
+      c.strokeStyle = ahead ? 'hsl(145 75% 60% / .3)' : 'hsl(355 75% 62% / .28)'
+      c.beginPath()
+      c.arc(w / 2, w / 2, track, Math.min(ya, ga), Math.max(ya, ga))
+      c.stroke()
+    }
+    // Diamonds, not dots: the orbiters and motes are all circles, so the two
+    // racers stay identifiable at a peripheral glance.
+    const diamond = (ang: number, r2: number) => {
+      const x = w / 2 + Math.cos(ang) * track, y = w / 2 + Math.sin(ang) * track
+      c.beginPath()
+      c.moveTo(x, y - r2); c.lineTo(x + r2, y); c.lineTo(x, y + r2); c.lineTo(x - r2, y)
+      c.closePath()
+    }
+    // The ghost: dimmer, hollow and colorless — clearly not part of the live world.
+    c.lineWidth = 1.6
+    c.strokeStyle = 'hsl(220 25% 76% / .55)'
+    diamond(ga, 4.6)
+    c.stroke()
+    // You: small, solid and bright, colored by how the race is going.
+    c.fillStyle = ahead ? 'hsl(145 85% 68% / .92)' : 'hsl(355 85% 68% / .88)'
+    diamond(ya, 5.4)
     c.fill()
   }
 }
