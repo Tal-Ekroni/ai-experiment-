@@ -128,7 +128,7 @@ function tick(now: number) {
   if (s.phase === 'awaiting' && s.command && s.issued !== lastSpokenIssued) {
     lastSpokenIssued = s.issued
     shell.commandLanded(s.command)
-    if (!shell.maybeTeach(s.command)) sound.say(s.command.label, intensity(s.issued))
+    if (!shell.maybeTeach(s.command)) sound.say(s.command.label, intensity(s.issued), s.command.windowMs)
   }
 
   // Resolutions that happen inside tick() (not via submit): timeouts, and the

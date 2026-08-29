@@ -151,7 +151,8 @@ for (const spec of specs) {
   let onset = null
   for (let i = spec.minIssued ?? 0; i <= 400; i++) {
     // Window as commands.ts computes it for this spec at command index i.
-    const w = Math.round(commands.windowFor(i) * (spec.windowScale ?? 1))
+    // Mirror nextCommand() exactly: multiplicative scale PLUS additive gesture latency.
+    const w = Math.round(commands.windowFor(i) * (spec.windowScale ?? 1)) + lat
     if (w < need) { onset = i; break }
   }
   audit.push({ label: spec.label, latencyMs: lat, needsMs: need, unwinnableFromCommand: onset })

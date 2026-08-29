@@ -19,6 +19,7 @@
  */
 import { Action, Command } from './types'
 import { Rng } from './rng'
+import { gestureLatencyMs } from './input'
 
 interface Spec {
   action: Action
@@ -120,9 +121,13 @@ export function nextCommand(rng: Rng, issued: number, previous: Command | null):
     spec = pick(rng, pool)
   }
   const base = windowFor(issued)
+  // The ramp shrinks the DECISION window; the physical cost of performing the
+  // gesture (measured per-core by the input tests) is a constant the ramp must
+  // never eat, so it is budgeted as an additive term. Without it, HOLD IT and
+  // FLIP IT become provably unwinnable late-game (see tools/playtest-latency.mjs).
   const windowMs = spec.inhibit
     ? INHIBIT_WINDOW
-    : Math.round(base * (spec.windowScale ?? 1))
+    : Math.round(base * (spec.windowScale ?? 1)) + gestureLatencyMs(spec.action)
   return {
     action: spec.action,
     label: spec.label,
