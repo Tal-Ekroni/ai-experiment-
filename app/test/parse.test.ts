@@ -52,7 +52,7 @@ test('real .xlsx (OOXML zip, inline strings, Max layout): header-mapped, DD-MM-Y
   assert.equal(res.detectedMapping?.amount, 5, 'סכום חיוב is col F, chosen over other numeric cols');
   assert.equal(res.detectedMapping?.descriptor, 1, 'שם בית העסק is col B');
   assert.equal(res.rows.length, 4, '3 junk rows + header skipped');
-  assert.deepEqual(res.rows[0], { date: '2025-07-24', amount: -32050, descriptor: 'שופרסל דיל' });
+  assert.deepEqual(res.rows[0], { date: '2025-07-24', amount: -32050, descriptor: 'שופרסל דיל', bankCategory: 'מזון' });
   assert.equal(res.rows[2].descriptor, 'מסעדת הצפון בע"מ', 'quote in name survives xml decode');
   assert.equal(res.rows[3].amount, 11961, 'a credit stays positive (refund), not flipped to spend');
 });
@@ -60,4 +60,10 @@ test('real .xlsx (OOXML zip, inline strings, Max layout): header-mapped, DD-MM-Y
 test('DD-MM-YYYY with dashes parses', () => {
   assert.equal(parseDate('24-07-2025'), '2025-07-24');
   assert.equal(parseDate('8-1-26'), '2026-01-08');
+});
+
+test('bank category column is captured from a labeled export', () => {
+  const res = parseUpload(fx('max-demo.xlsx'));
+  assert.equal(res.detectedMapping?.category, 2, 'קטגוריה is col C');
+  assert.equal(res.rows[0].bankCategory, 'מזון', 'row carries the bank label');
 });

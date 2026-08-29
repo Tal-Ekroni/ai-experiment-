@@ -5,14 +5,14 @@
 import { parseAmount, type Agorot } from './money.ts';
 import { isZip, parseXlsx } from './xlsx.ts';
 
-export interface ParsedRow { date: string; amount: Agorot; descriptor: string }
+export interface ParsedRow { date: string; amount: Agorot; descriptor: string; bankCategory?: string }
 export interface ParseResult {
   rows: ParsedRow[];
   headers: string[];
   raw: string[][];
   detectedMapping: Mapping | null;
 }
-export interface Mapping { date: number; amount: number; descriptor: number; signFlip: boolean }
+export interface Mapping { date: number; amount: number; descriptor: number; signFlip: boolean; category?: number }
 
 /** Decode hostile bytes: UTF-8 first; if replacement chars appear, windows-1255. */
 export function decodeUpload(buf: Buffer): string {
@@ -99,6 +99,7 @@ const HEADER_HINTS = {
   date: [/תאריך\s*עסקה/, /תאריך\s*רכישה/, /^תאריך$/, /תאריך\s*ערך/, /date/i],
   amount: [/סכום\s*חיוב/, /סכום\s*החיוב/, /^סכום$/, /סכום\s*עסקה/, /amount/i, /debit/i],
   descriptor: [/שם\s*בית\s*העסק/, /שם\s*בית\s*עסק/, /תיאור/, /בית\s*עסק/, /merchant|description|name/i],
+  category: [/^קטגוריה$/, /category/i],
 };
 function headerMapping(raw: string[][]): { mapping: Mapping; dataStart: number } | null {
   for (let r = 0; r < Math.min(raw.length, 8); r++) {
@@ -106,11 +107,12 @@ function headerMapping(raw: string[][]): { mapping: Mapping; dataStart: number }
     if (!row || row.length < 3) continue;
     const find = (pats: RegExp[]) => row.findIndex(cell => pats.some(p => p.test((cell ?? '').trim())));
     const date = find(HEADER_HINTS.date), amount = find(HEADER_HINTS.amount), descriptor = find(HEADER_HINTS.descriptor);
+    const category = find(HEADER_HINTS.category);
     if (date >= 0 && amount >= 0 && descriptor >= 0) {
       // sign convention from the data below the header
       const amts = raw.slice(r + 1, r + 21).map(rr => { try { return parseAmount(rr[amount] ?? ''); } catch { return NaN; } }).filter(n => !Number.isNaN(n));
       const posShare = amts.length ? amts.filter(a => a > 0).length / amts.length : 0;
-      return { mapping: { date, amount, descriptor, signFlip: posShare > 0.7 }, dataStart: r + 1 };
+      return { mapping: { date, amount, descriptor, signFlip: posShare > 0.7, category: category >= 0 ? category : undefined }, dataStart: r + 1 };
     }
   }
   return null;
@@ -174,7 +176,8 @@ export function applyMapping(raw: string[][], m: Mapping, dataStart = 0): Parsed
     if (m.signFlip) amount = -amount;
     const descriptor = (r[m.descriptor] ?? '').trim();
     if (!descriptor) continue;
-    out.push({ date, amount, descriptor });
+    const bankCategory = m.category !== undefined ? (r[m.category] ?? '').trim() || undefined : undefined;
+    out.push(bankCategory ? { date, amount, descriptor, bankCategory } : { date, amount, descriptor });
   }
   return out;
 }

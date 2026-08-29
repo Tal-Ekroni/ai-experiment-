@@ -82,9 +82,12 @@ function confirmScreen(): string {
     WHERE confirmed = 0 ORDER BY volume DESC LIMIT 20`).all() as any[];
   if (top.length === 0) return page('אישור', '', h`<div class="card"><p>אין ספקים לאישור.</p>
     <a href="/passcode">המשך ←</a></div>`, { nav: false });
+  const preCategorized = top.filter(m => m.default_category !== OTHER).length;
   return page('אישור ספקים', '', h`<div class="card">
-    <h1>20 הקלטות, וסיימנו</h1>
-    <p class="sub">אלה הספקים הגדולים שלכם. אשרו קטגוריה לכל אחד — זה מסווג מאות תנועות בבת אחת.</p>
+    <h1>סיווג — לא חובה</h1>
+    ${preCategorized > 0
+      ? h`<p class="sub">הבנק כבר סיווג את רוב העסקאות, והקטגוריות מסומנות למטה. אפשר לתקן מה שלא מדויק, או פשוט <a href="/passcode"><b>להמשיך ←</b></a></p>`
+      : h`<p class="sub">אלה הספקים הגדולים שלכם. סיווג מהיר כאן מסווג מאות תנועות בבת אחת — או <a href="/passcode">לדלג ←</a></p>`}
     ${raw(top.map(m => h`<form method="post" action="/setup/confirm" class="merchant-row">
       <input type="hidden" name="merchant_id" value="${m.id}">
       <span style="min-inline-size:180px"><span class="desc">${m.display}</span><br>
@@ -238,7 +241,12 @@ const server = createServer(async (req, res) => {
         if ('needsMapping' in r && r.needsMapping) return send(res, 200, JSON.stringify({ error: 'לא זוהה מבנה הקובץ — נסו קובץ אחר' }), 'application/json');
         const llm = await makeLlmCategorizer().catch(() => null);
         await categorizeAll(db, llm);
-        return send(res, 200, JSON.stringify({ next: '/setup/confirm', rows: r.rows }), 'application/json');
+        // If the bank already categorized most of the spend, skip the manual confirm step.
+        const top = db.prepare(`SELECT default_category, volume FROM merchants ORDER BY volume DESC LIMIT 20`).all() as { default_category: string; volume: number }[];
+        const vol = top.reduce((s, m) => s + m.volume, 0) || 1;
+        const knownVol = top.filter(m => m.default_category !== OTHER).reduce((s, m) => s + m.volume, 0);
+        const next = knownVol / vol >= 0.7 ? '/passcode' : '/setup/confirm';
+        return send(res, 200, JSON.stringify({ next, rows: r.rows }), 'application/json');
       }
       if (path === '/setup/confirm' && req.method === 'POST') {
         const body = await readBody(req);

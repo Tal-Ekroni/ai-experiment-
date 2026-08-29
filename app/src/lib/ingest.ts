@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { parseUpload, applyMapping, type Mapping, type ParsedRow } from './parse.ts';
 import { upsertMerchant } from './categorize.ts';
+import { mapBankCategory } from './bankcat.ts';
 import { classifyAll } from './ledger.ts';
 
 export function importBuffer(db: DatabaseSync, accountId: number, filename: string, buf: Buffer, mapping?: Mapping) {
@@ -18,7 +19,13 @@ export function importBuffer(db: DatabaseSync, accountId: number, filename: stri
     VALUES(?,?,?,?,?,?,?)`);
   for (const r of rows) {
     const mid = upsertMerchant(db, r.descriptor, r.amount);
-    insert.run(accountId, r.date, r.date, r.amount, r.descriptor, mid, Number(imp.lastInsertRowid));
+    const txId = insert.run(accountId, r.date, r.date, r.amount, r.descriptor, mid, Number(imp.lastInsertRowid)).lastInsertRowid;
+    // The bank already categorized this row — use it (attributed, not household-confirmed).
+    const bankCat = mapBankCategory(r.bankCategory);
+    if (bankCat) {
+      db.prepare(`UPDATE transactions SET category = ? WHERE id = ?`).run(bankCat, Number(txId));
+      db.prepare(`UPDATE merchants SET default_category = ? WHERE id = ? AND confirmed = 0`).run(bankCat, mid);
+    }
   }
   db.prepare(`UPDATE accounts SET synced_through = (SELECT MAX(booking_date) FROM transactions WHERE account_id = ?) WHERE id = ?`)
     .run(accountId, accountId);
