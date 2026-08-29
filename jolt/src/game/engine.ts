@@ -27,7 +27,7 @@ export class Engine {
     this.state = {
       phase: 'idle', command: null, elapsed: 0, score: 0, streak: 0, bestStreak: 0,
       lives: mode.lives, issued: 0, runtime: 0, lastResult: null, seed,
-      mode: mode.id, correct: 0,
+      mode: mode.id, correct: 0, rampIssued: mode.rampOffset,
     }
   }
 
@@ -36,7 +36,9 @@ export class Engine {
    *  state.issued. Drives windows, unlocks, pacing and intensity. */
   effectiveIssued(): number {
     const eff = this.state.issued + this.mode.rampOffset
-    return this.mode.rampCap > 0 ? Math.min(eff, this.mode.rampCap) : eff
+    const v = this.mode.rampCap > 0 ? Math.min(eff, this.mode.rampCap) : eff
+    this.state.rampIssued = v
+    return v
   }
 
   start(): void {

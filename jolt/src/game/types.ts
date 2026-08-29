@@ -58,6 +58,9 @@ export interface GameState {
   lives: number
   /** Total commands issued this run. Drives the difficulty ramp. */
   issued: number
+  /** issued as the ramp sees it: mode head-start and cap applied. Kept in
+   *  state so pure-state consumers (renderer) match the engine's energy. */
+  rampIssued: number
   /** Wall-clock milliseconds of the whole run. */
   runtime: number
   lastResult: 'correct' | 'wrong' | 'timeout' | null

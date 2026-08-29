@@ -243,8 +243,8 @@ export class Renderer {
     d.issued = String(s.issued)
     d.action = s.command ? s.command.action : ''
 
-    const i = intensity(s.issued)
-    const e = energyOf(s.issued, i)
+    const i = intensity(s.rampIssued)
+    const e = energyOf(s.rampIssued, i)
     const art = (s.command && ART[s.command.action]) || ART['tap']
     const inhibit = s.phase === 'awaiting' && !!s.command && s.command.inhibit
     // A jump of more than 250ms of game time in one sync means the state was
