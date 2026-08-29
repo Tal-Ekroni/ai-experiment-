@@ -59,7 +59,14 @@ function setupScreen(): string {
     ev.preventDefault();
     const f = document.getElementById('file').files[0];
     if (!f) return;
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(await f.arrayBuffer())));
+    document.getElementById('msg').textContent = 'מעלה…';
+    // Read base64 via FileReader — spreading a large byte array into fromCharCode overflows the stack.
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(',', 2)[1]);
+      r.onerror = () => rej(r.error);
+      r.readAsDataURL(f);
+    });
     const fd = new FormData(ev.target);
     const resp = await fetch('/setup/upload', { method: 'POST', headers: {'content-type':'application/json'},
       body: JSON.stringify({ name: f.name, account_name: fd.get('account_name'), kind: fd.get('kind'), data: b64 }) });
