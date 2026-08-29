@@ -6,6 +6,7 @@ import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
 import { heroBlock, monthBars, catRows, statusChips, categoryChips, catIcon } from './views.ts';
 import { catMeta } from '../lib/catmeta.ts';
+import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
 const catMetaHue = (c: string) => catMeta(c).h;
 import { retrospect, monthOverMonth, forecast, yearFacts } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
@@ -268,6 +269,65 @@ function transactionsScreen(qstr: string | null): string {
     </tbody></table></div>`);
 }
 
+function wealthScreen(): string {
+  const nw = netWorth(db);
+  const assets = listItems(db, 'asset');
+  const liabs = listItems(db, 'liability');
+  const hist = netWorthHistory(db, 12);
+  const fcf = freeCashFlow(db, 6);
+  const lastFcf = fcf.filter(f => !f.partial).slice(-1)[0] ?? fcf.slice(-1)[0];
+  const hasItems = assets.length + liabs.length > 0;
+
+  const itemRow = (it: any) => {
+    const m = catMetaFor(it.kind, it.category);
+    return h`<form method="post" action="/wealth/save" class="wl-row">
+      <input type="hidden" name="id" value="${String(it.id)}"><input type="hidden" name="kind" value="${it.kind}">
+      <span class="ic" style="--h:${String(m.h)}">${m.icon}</span>
+      <span class="wl-name"><b>${it.name}</b><br><span class="sub">${m.label}</span></span>
+      <span class="wl-edit"><span class="cur">₪</span><input type="text" inputmode="numeric" name="balance"
+        value="${(Math.round(it.balance/100)).toLocaleString('en-US')}" aria-label="יתרה"></span>
+      <button class="wl-save" title="שמירה">✓</button>
+      <button class="wl-del" formaction="/wealth/delete" title="מחיקה">🗑</button>
+    </form>`;
+  };
+  const addForm = (kind: string, cats: Record<string, any>) => h`
+    <form method="post" action="/wealth/save" class="wl-add">
+      <input type="hidden" name="kind" value="${kind}">
+      <select name="category">${raw(Object.entries(cats).map(([k,v]:any) => `<option value="${k}">${escape(v.icon)} ${escape(v.label)}</option>`).join(''))}</select>
+      <input type="text" name="name" placeholder="שם (למשל: מיטב דש)" required>
+      <span class="wl-edit"><span class="cur">₪</span><input type="text" inputmode="numeric" name="balance" placeholder="0" required></span>
+      <button class="primary">הוספה</button>
+    </form>`;
+
+  const netHero = h`<div class="card hero-card wl-hero ${nw.net>=0?'under':'over'}">
+    <div class="hero ${nw.net>=0?'under':'over'}">
+      <div class="cap">השווי הנקי שלכם</div>
+      <div class="amount">${escape(fmt(nw.net, { sign: true }))}</div>
+      <div class="label">${nw.net>=0?'אתם בפלוס':'עוד בונים'}</div>
+      <div class="note">נכסים ${fmt(nw.assets)} · התחייבויות ${fmt(nw.liabilities)}</div>
+    </div>
+    ${hist.length>=2 ? h`<div style="padding:0 8px 4px">${monthBars(hist.map(x=>({m:x.month, expense:Math.max(0,x.net)})), '')}</div>` : ''}
+  </div>`;
+
+  const fcfCard = lastFcf ? h`<div class="card">
+    <div class="card-head"><h2>תזרים חופשי</h2><span class="tag">${lastFcf.month}</span></div>
+    <div class="big" style="color:${lastFcf.net>=0?'var(--under)':'var(--over)'}">${escape(fmt(lastFcf.net,{sign:true}))}</div>
+    <div class="sub">${lastFcf.net>=0?'זה מה שנשאר לכם אחרי ההוצאות':'הוצאתם יותר מששנכנס החודש'} · נכנס ${fmt(lastFcf.income)} · יצא ${fmt(lastFcf.expense)}</div>
+    <div class="fcf-spark">${raw(fcf.map(f=>`<span class="fs ${f.net>=0?'pos':'neg'}" style="--v:${Math.min(100,Math.abs(f.net)/Math.max(1,Math.max(...fcf.map(x=>Math.abs(x.net))))*100)}%" title="${escape(f.month)}: ${escape(fmt(f.net,{sign:true}))}"></span>`).join(''))}</div>
+  </div>` : '';
+
+  return page('הון', '/wealth', h`
+    ${netHero}
+    ${fcfCard}
+    <div class="card"><div class="card-head"><h2>נכסים</h2><span class="sub">${fmt(nw.assets)}</span></div>
+      ${assets.length? assets.map(itemRow) : h`<p class="sub">הוסיפו קרן השתלמות, פנסיה, תיק השקעות, נדל״ן…</p>`}
+      ${addForm('asset', ASSET_CATS)}</div>
+    <div class="card"><div class="card-head"><h2>התחייבויות</h2><span class="sub">${fmt(nw.liabilities)}</span></div>
+      ${liabs.length? liabs.map(itemRow) : h`<p class="sub">משכנתא, הלוואות, חוב אשראי…</p>`}
+      ${addForm('liability', LIAB_CATS)}</div>
+    <p class="footnote">הנתונים נשמרים אצלכם בלבד. עדכנו יתרות פעם בחודש — קרן השתלמות ופנסיה אין דרך לסנכרן אוטומטית מבלי להוציא מידע מהבית.</p>`);
+}
+
 function healthScreen(): string {
   const checks = runSelfCheck(db, DB_PATH);
   const jobs = db.prepare(`SELECT job, MAX(started_at) AS last, ok FROM job_runs GROUP BY job ORDER BY job`).all() as any[];
@@ -359,6 +419,22 @@ const server = createServer(async (req, res) => {
     if (path === '/' ) return send(res, 200, dashboard());
     if (path === '/retrospect') return send(res, 200, retrospectScreen());
     if (path === '/year') return send(res, 200, yearScreen());
+    if (path === '/wealth') return send(res, 200, wealthScreen());
+    if (path === '/wealth/save' && req.method === 'POST') {
+      const b = await readBody(req);
+      const kind = b.get('kind') === 'liability' ? 'liability' : 'asset';
+      const balance = Math.round(Number((b.get('balance') ?? '0').replace(/[^\d.-]/g, '')) * 100) || 0;
+      const name = (b.get('name') ?? '').trim() || 'ללא שם';
+      const cats = kind === 'asset' ? ASSET_CATS : LIAB_CATS;
+      const category = (b.get('category') && b.get('category')! in cats) ? b.get('category')! : Object.keys(cats)[0];
+      upsertItem(db, { id: b.get('id') ? Number(b.get('id')) : undefined, name, kind, category, balance });
+      return redirect(res, '/wealth');
+    }
+    if (path === '/wealth/delete' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (b.get('id')) deleteItem(db, Number(b.get('id')));
+      return redirect(res, '/wealth');
+    }
     if (path === '/review') return send(res, 200, reviewScreen());
     if (path === '/review/categorize' && req.method === 'POST') {
       const body = await readBody(req);

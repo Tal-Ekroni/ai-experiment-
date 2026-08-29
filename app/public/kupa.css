@@ -252,3 +252,23 @@ td .tag { margin-inline-start: 6px; }
 .reel-x { direction: ltr; unicode-bidi: isolate; font-size: .82rem; color: var(--ink-2); font-weight: 600; text-align: start; }
 .year-reel .reel:first-child { grid-column: 1 / -1; }
 .year-reel .reel:first-child .reel-v { font-size: 1.5rem; }
+
+/* ---- wealth / balance sheet ---- */
+.wl-hero .bars { height: 110px; }
+.wl-row, .wl-add { display: flex; align-items: center; gap: 10px; padding-block: 10px; border-block-end: 1px solid var(--line); flex-wrap: wrap; }
+.wl-row:last-of-type { border-block-end: 0; }
+.wl-name { flex: 1; min-inline-size: 120px; line-height: 1.25; }
+.wl-name b { font-weight: 700; }
+.wl-edit { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding-inline: 10px; }
+.wl-edit .cur { color: var(--muted); font-weight: 700; }
+.wl-edit input { border: 0; background: transparent; padding: 8px 2px; inline-size: 92px; text-align: end; direction: ltr; font-variant-numeric: tabular-nums; font-weight: 700; }
+.wl-edit input:focus { outline: none; box-shadow: none; }
+.wl-save, .wl-del { border: 0; background: transparent; cursor: pointer; font-size: 1rem; padding: 8px; border-radius: 8px; }
+.wl-save { color: var(--brand-ink); } .wl-save:hover { background: var(--brand-wash); }
+.wl-del:hover { background: color-mix(in srgb, var(--over) 14%, transparent); }
+.wl-add { border-block-end: 0; margin-block-start: 6px; padding-block-start: 14px; border-block-start: 1px dashed var(--line); }
+.wl-add select, .wl-add input[type=text] { flex: 1; min-inline-size: 90px; }
+.wl-add .wl-edit { flex: 0 0 auto; }
+.fcf-spark { display: flex; align-items: flex-end; gap: 5px; height: 44px; margin-block-start: 12px; }
+.fcf-spark .fs { flex: 1; min-height: 3px; block-size: var(--v); border-radius: 4px 4px 0 0; align-self: flex-end; }
+.fcf-spark .fs.pos { background: var(--under); } .fcf-spark .fs.neg { background: var(--over); }

@@ -120,8 +120,8 @@ is the only realistic path anyway.
 
 | Order | Bet | Effort |
 |---|---|---|
-| **A** | **Free cash flow** surfaced ("you kept ₪X this month") — mostly built, the bridge to wealth | S |
-| **B** | **Household balance sheet** — assets (cash, broker, keren hishtalmut, pension/gemel, real estate) − liabilities (mortgage, loans, debt) = **net worth over time** | M |
+| **A** | ✅ **Free cash flow** surfaced ("you kept ₪X this month") — mostly built, the bridge to wealth | S |
+| **B** | ✅ **Household balance sheet** — assets (cash, broker, keren hishtalmut, pension/gemel, real estate) − liabilities (mortgage, loans, debt) = **net worth over time** | M |
 | **C** | **COICOP category hierarchy** — parent→sub categories ("real categories") | M |
 | **D** | later, with live sync: **MCC** capture · mortgage amortization detail | M |
 

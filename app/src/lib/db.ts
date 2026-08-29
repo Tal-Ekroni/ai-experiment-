@@ -111,6 +111,21 @@ export function openDb(path: string): DatabaseSync {
       ok INTEGER,
       detail TEXT
     );
+    CREATE TABLE IF NOT EXISTS wealth_items (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('asset','liability')),
+      category TEXT NOT NULL,
+      balance INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS wealth_history (
+      item_id INTEGER NOT NULL REFERENCES wealth_items(id) ON DELETE CASCADE,
+      month TEXT NOT NULL,
+      balance INTEGER NOT NULL,
+      PRIMARY KEY (item_id, month)
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
