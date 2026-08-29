@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/lib/db.ts';
-import { detectRecurring, recurringTotal } from '../src/lib/recurring.ts';
+import { detectRecurring, recurringTotal, committedVsFree } from '../src/lib/recurring.ts';
 
 function db() {
   const d = openDb(':memory:');
@@ -62,4 +62,17 @@ test('total sums the monthly-equivalents', () => {
   const b = merch(d,'b'); [1,2,3,4].forEach(i=>tx(d,b,`2026-0${i}-15`,3000));
   const t = recurringTotal(detectRecurring(d));
   assert.equal(t.count, 2); assert.equal(t.monthly, 8000);
+});
+
+test('committed vs free splits monthly spend', () => {
+  const d = db();
+  const sub = merch(d, 'נטפליקס');
+  ['2026-01-05','2026-02-05','2026-03-05','2026-04-05'].forEach(dt => tx(d, sub, dt, 10000)); // ₪100/mo sub
+  const shop = merch(d, 'קניה');
+  ['2026-01-20','2026-02-20','2026-03-20','2026-04-20'].forEach(dt => tx(d, shop, dt, 40000, 'מזון')); // wait — same merchant 4x monthly stable = also recurring!
+  const c = committedVsFree(d);
+  // both are stable monthly here; committed = both = 50000, discretionary 0. Assert the split adds up.
+  assert.equal(c.monthlySpend, 50000);
+  assert.equal(c.committed + c.discretionary, c.monthlySpend);
+  assert.equal(c.committedPct, Math.round(c.committed / c.monthlySpend * 100));
 });

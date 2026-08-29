@@ -8,7 +8,7 @@ import { heroBlock, monthBars, catRows, coicopRows, statusChips, categoryChips, 
 import { catMeta } from '../lib/catmeta.ts';
 import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, getItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
 import { amortize, sampleBalance } from '../lib/loan.ts';
-import { detectRecurring, recurringTotal } from '../lib/recurring.ts';
+import { detectRecurring, recurringTotal, committedVsFree } from '../lib/recurring.ts';
 const catMetaHue = (c: string) => catMeta(c).h;
 import { retrospect, monthOverMonth, forecast, yearFacts } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
@@ -383,6 +383,14 @@ function recurringScreen(): string {
       <div class="label">${String(t.count)} חיובים קבועים</div>
       <div class="note">זה מה שיוצא עוד לפני שהחלטתם משהו</div>
     </div></div>
+    ${(() => { const c = committedVsFree(db); return c.monthlySpend > 0 ? h`<div class="card">
+      <div class="card-head"><h2>כמה מההוצאה כבר סגורה</h2><span class="tag">${String(c.committedPct)}% מחויב</span></div>
+      <div class="split"><span class="sp-c" style="inline-size:${String(c.committedPct)}%"></span><span class="sp-d" style="inline-size:${String(100-c.committedPct)}%"></span></div>
+      <div class="split-legend">
+        <span><i class="dc"></i> מחויב מראש · <b>${escape(fmt(c.committed))}</b></span>
+        <span><i class="dd"></i> בשליטתכם · <b>${escape(fmt(c.discretionary))}</b></span>
+      </div>
+      <div class="sub">מתוך ${fmt(c.monthlySpend)} שאתם מוציאים בחודש בממוצע</div></div>` : ''; })()}
     <div class="card"><div class="card-head"><h2>החיובים</h2><span class="sub">לפי עלות חודשית</span></div>
       ${list.map(r => h`<div class="rc">
         ${catIcon(r.category)}

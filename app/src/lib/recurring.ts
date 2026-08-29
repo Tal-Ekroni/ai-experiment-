@@ -70,3 +70,15 @@ export function detectRecurring(db: DatabaseSync, minCount = 3): Recurring[] {
 export function recurringTotal(list: Recurring[]) {
   return { monthly: list.reduce((s,r)=>s+r.monthly,0), count: list.length };
 }
+
+/** "Committed vs. free" (org cycle 2): how much of monthly spend is locked before any decision. */
+export function committedVsFree(db: DatabaseSync) {
+  const committed = recurringTotal(detectRecurring(db)).monthly;
+  const row = db.prepare(`SELECT COUNT(DISTINCT substr(booking_date,1,7)) AS months,
+      COALESCE(SUM(-amount),0) AS total FROM transactions
+    WHERE flow_class='expense' AND status!='superseded'`).get() as { months: number; total: number };
+  const monthlySpend = row.months > 0 ? Math.round(row.total / row.months) : 0;
+  const discretionary = Math.max(0, monthlySpend - committed);
+  const committedPct = monthlySpend > 0 ? Math.round(committed / monthlySpend * 100) : 0;
+  return { committed, discretionary, monthlySpend, committedPct };
+}

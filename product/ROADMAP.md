@@ -43,7 +43,7 @@ highest-leverage win is a *channel* decision, not a feature. Spend accordingly.
 
 ## NEXT — the insight engine and the big rock
 
-### 4. Recurring-charge engine → "committed vs. free" money
+### 4. ✅ Recurring-charge engine → "committed vs. free" money — SHIPPED (org cycles 1–2)
 - **Problem:** money leaves before anyone decides (subscriptions, insurance, standing orders), and
   the household can't see how much of the month was already spoken for.
 - **The bet:** detect recurring charges from the ledger (same merchant, ~monthly cadence, stable
