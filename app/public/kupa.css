@@ -1,0 +1,85 @@
+/* Kupa — hand-written, RTL-first, logical properties only.
+   Palette per gauntlet §12: validated blue↔red pair, status colors icon+label, text wears ink. */
+:root {
+  color-scheme: light dark;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --over: #e34948; --under: #2a78d6; --bar: #2a78d6;
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --over: #e66767; --under: #3987e5; --bar: #3987e5;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 860px; margin-inline: auto; padding: 20px 16px 60px; }
+a { color: var(--under); text-decoration: none; }
+nav { display: flex; gap: 16px; padding: 12px 16px; border-block-end: 1px solid var(--grid);
+      background: var(--surface); flex-wrap: wrap; align-items: center; }
+nav a { color: var(--ink-2); font-weight: 500; }
+nav a[aria-current] { color: var(--ink); font-weight: 700; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px;
+        padding: 18px 20px; margin-block: 14px; }
+h1 { font-size: 1.35rem; margin: 0 0 6px; } h2 { font-size: 1.05rem; margin: 0 0 10px; }
+.sub { color: var(--ink-2); font-size: .9rem; }
+/* Hero — composed element per §12.1: amount box is direction-isolated, container lays out. */
+.hero { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 28px 0 20px; }
+.hero .amount { direction: ltr; unicode-bidi: isolate; font-size: 3.4rem; font-weight: 750;
+                letter-spacing: -.02em; line-height: 1; }
+.hero .glyph { font-size: 1.4rem; vertical-align: middle; margin-inline-end: 6px; }
+.hero.over  .amount, .hero.over  .glyph { color: var(--over); }
+.hero.under .amount, .hero.under .glyph { color: var(--under); }
+.hero .label { color: var(--ink-2); font-size: 1.05rem; }
+/* Bars — thin marks, rounded data-end, 2px gap, single series, no legend */
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 140px; margin-block: 10px;
+        border-block-end: 1px solid var(--axis); }
+.bars .b { flex: 1; background: var(--bar); border-start-start-radius: 4px;
+           border-start-end-radius: 4px; min-height: 2px; position: relative; }
+.bars .b:hover::after { content: attr(data-v); position: absolute; inset-block-end: 100%;
+  inset-inline-start: 50%; transform: translateX(50%); background: var(--ink); color: var(--surface);
+  padding: 2px 8px; border-radius: 6px; font-size: .78rem; white-space: nowrap; direction: ltr; }
+.bar-labels { display: flex; gap: 2px; } .bar-labels span { flex: 1; text-align: center;
+  font-size: .7rem; color: var(--muted); }
+/* Category rows */
+.cat { display: flex; align-items: center; gap: 10px; padding-block: 7px;
+       border-block-end: 1px solid var(--grid); }
+.cat:last-child { border-block-end: 0; }
+.cat .name { flex: 1; } .cat .track { flex: 2; height: 8px; background: var(--grid); border-radius: 4px; }
+.cat .fill { height: 8px; background: var(--bar); border-radius: 4px; }
+.cat .val { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums;
+            color: var(--ink-2); min-inline-size: 90px; text-align: end; }
+.delta-pos { color: var(--over); } .delta-neg { color: var(--under); }
+/* Status chips — icon + label, never color alone */
+.status { display: flex; gap: 10px; flex-wrap: wrap; font-size: .82rem; }
+.chip { display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px;
+        border: 1px solid var(--ring); border-radius: 999px; color: var(--ink-2); }
+.chip .dot { inline-size: 8px; block-size: 8px; border-radius: 50%; }
+.dot.good { background: var(--good); } .dot.warn { background: var(--warn); }
+.dot.serious { background: var(--serious); } .dot.crit { background: var(--crit); }
+/* Tables, forms, queue */
+table { border-collapse: collapse; inline-size: 100%; }
+td, th { padding: 7px 8px; border-block-end: 1px solid var(--grid); text-align: start; }
+.num { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; text-align: end; }
+.desc { unicode-bidi: plaintext; overflow: hidden; text-overflow: ellipsis; max-inline-size: 34ch;
+        white-space: nowrap; display: inline-block; vertical-align: bottom; }
+input, select, button { font: inherit; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid var(--axis); background: var(--surface); color: var(--ink); }
+button.primary { background: var(--under); color: #fff; border: 0; cursor: pointer; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { padding: 5px 12px; border-radius: 999px; cursor: pointer; }
+.chips button[data-on] { background: var(--under); color: #fff; border-color: var(--under); }
+.merchant-row { display: flex; align-items: center; gap: 12px; padding-block: 10px;
+                border-block-end: 1px solid var(--grid); flex-wrap: wrap; }
+.empty { text-align: center; color: var(--ink-2); padding: 40px 20px; }
+.big { font-size: 2rem; font-weight: 700; direction: ltr; unicode-bidi: isolate; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.footnote { color: var(--muted); font-size: .78rem; margin-block-start: 10px; }

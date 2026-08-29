@@ -1,0 +1,16 @@
+{
+  "name": "kupa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server/main.ts",
+    "digest": "tsx src/jobs/digest-cli.ts",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

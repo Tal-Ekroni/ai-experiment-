@@ -1,0 +1,12 @@
+services:
+  kupa:
+    build: .
+    ports: ["3000:3000"]
+    volumes: ["kupa-data:/data"]
+    restart: unless-stopped
+    environment:
+      # Stage 3 (optional): KUPA_TELEGRAM_TOKEN, KUPA_TELEGRAM_CHATS=123,456
+      # Categorizer (optional): ANTHROPIC_API_KEY
+      KUPA_DB: /data/kupa.db
+volumes:
+  kupa-data:
