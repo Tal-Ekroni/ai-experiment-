@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Jolt</title>
+<link rel="icon" href="data:," /><!-- zero-asset: silences the /favicon.ico 404 -->
+
+<style>
+  html,body { margin:0; height:100%; background:#0b0d12; overflow:hidden; touch-action:none;
+              -webkit-user-select:none; user-select:none; overscroll-behavior:none; }
+  #stage { position:fixed; inset:0; display:grid; place-items:center; }
+
+  /* Ambient animation vocabulary used by src/game/render.ts (zero-asset).
+     All composited properties only (transform/opacity) — free at 60fps. */
+  @keyframes jrBreathe { 0%,100% { opacity:.55; transform:scale(1) }
+                         50%     { opacity:1;   transform:scale(1.16) } }
+  @keyframes jrSpin  { from { transform:rotate(0deg) }  to { transform:rotate(360deg) } }
+  @keyframes jrSpinR { from { transform:rotate(0deg) }  to { transform:rotate(-360deg) } }
+  @media (prefers-reduced-motion: reduce) { .jr-anim { animation:none !important } }
+</style>
+<div id="stage"></div>
+<script type="module" src="/src/main.ts"></script>
