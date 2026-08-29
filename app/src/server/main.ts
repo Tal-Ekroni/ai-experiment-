@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync } from 'node:fs';
 import { openDb, getSetting, setSetting, CATEGORIES, OTHER } from '../lib/db.ts';
 import { fmt } from '../lib/money.ts';
-import { h, raw, escape, page } from './html.ts';
+import { h, raw, escape, render, page, type Html } from './html.ts';
 import { heroBlock, monthBars, catRows, statusChips, categoryChips } from './views.ts';
 import { retrospect, monthOverMonth } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
@@ -109,7 +109,7 @@ function dashboard(): string {
       label: `מאומת: ${cov.reconcilableAccounts}/${cov.totalAccounts} חשבונות · ${cov.spendSharePct}% מההוצאה` },
     { cls: exTotal >= 95 ? 'good' : 'warn', label: `מוסבר ${ex.explainedPct}% · משויך ${ex.attributedPct}%` },
   ]);
-  let hero: string, follow = '';
+  let hero: Html, follow: Html | string = '';
   if (mom) {
     hero = heroBlock(mom.delta, mom.delta > 0 ? 'יותר מהחודש הקודם' : 'פחות מהחודש הקודם',
       `${mom.curMonth} מול ${mom.prevMonth} · חודש אחד, לא מגמה`);
