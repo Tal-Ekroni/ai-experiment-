@@ -181,7 +181,14 @@ export interface ShellOptions {
 
 type Screen = 'none' | 'home' | 'ask' | 'teach' | 'over' | 'paused' | 'help'
 
-interface OverData { score: number; bestStreak: number; issued: number; runtimeMs: number }
+interface OverData {
+  score: number; bestStreak: number; issued: number; runtimeMs: number
+  /** The command that ended the run — a death the player can read is a death
+   *  that feels earned. */
+  deathLabel?: string | null
+  deathCause?: 'wrong' | 'timeout' | null
+  deathInhibit?: boolean
+}
 
 export class Shell {
   enabled: boolean
@@ -202,6 +209,9 @@ export class Shell {
   private lastPhase = 'idle'
   private hintShown = false
   private motionToastDone = false
+  /** The best score at the moment the current run began — the chase target. */
+  private chaseBest = 0
+  private bestToastDone = true
 
   constructor(opts: ShellOptions) {
     this.opts = opts
@@ -228,12 +238,20 @@ export class Shell {
       const s = d && d.status
       if (s === 'granted' || s === 'denied' || s === 'unavailable') {
         this.motion = s
-        if ((s === 'denied' || s === 'unavailable') && this.touchDevice &&
-            this.meta.moves === 'auto' && !this.motionToastDone) {
-          this.motionToastDone = true
-          this.toast(s === 'denied'
-            ? 'MOTION BLOCKED — TOUCH MOVES ON'
-            : 'NO MOTION SENSOR — TOUCH MOVES ON')
+        if ((s === 'denied' || s === 'unavailable') && this.touchDevice) {
+          // An explicit motion preference cannot survive hardware that says no:
+          // motion commands would be physically unanswerable. Fall back.
+          if (this.meta.moves === 'motion') {
+            this.meta.moves = 'auto'
+            saveMeta(this.meta)
+            if (this.screen === 'home') this.showHome()
+          }
+          if (this.meta.moves === 'auto' && !this.motionToastDone) {
+            this.motionToastDone = true
+            this.toast(s === 'denied'
+              ? 'MOTION BLOCKED — TOUCH MOVES ON'
+              : 'NO MOTION SENSOR — TOUCH MOVES ON')
+          }
         }
       }
     }) as EventListener)
@@ -365,10 +383,16 @@ export class Shell {
     }
   }
 
-  /** Cheap per-frame bookkeeping. */
-  frame(phase: string): void {
+  /** Cheap per-frame bookkeeping. Also fires the one mid-run chase moment:
+   *  the instant the live score passes the personal best. */
+  frame(phase: string, score = 0): void {
     if (!this.enabled) return
     this.lastPhase = phase
+    if (!this.bestToastDone && score > this.chaseBest &&
+        (phase === 'awaiting' || phase === 'resolved')) {
+      this.bestToastDone = true
+      this.toast('THAT’S A NEW BEST — KEEP GOING')
+    }
     if (this.hintShown && phase !== 'awaiting') {
       this.hint.hidden = true
       this.hintShown = false
@@ -435,6 +459,12 @@ export class Shell {
   private showTeach(cmd: Command, lesson: Lesson): void {
     const touch = this.touchMovesActive()
     const how = touch && lesson.touchHow ? lesson.touchHow : lesson.how
+    // The swipe lesson shows the arrow for THIS command's direction, matching
+    // the backdrop glyph the renderer will use for it in play.
+    const DIR: Record<string, string> = {
+      'swipe-left': '◀', 'swipe-right': '▶', 'swipe-up': '▲', 'swipe-down': '▼',
+    }
+    const glyph = DIR[cmd.action] ?? lesson.glyph
     const keyHint = !this.touchDevice && lesson.key
       ? `<div class="jsh-keys">keyboard: ${lesson.key}</div>` : ''
     const foot = cmd.inhibit
@@ -446,7 +476,7 @@ export class Shell {
       <div class="jsh-wrap jsh-dim jsh-in">
         <div class="jsh-card" style="border-color:${accent}44">
           <div class="jsh-pill" style="color:${accent};border-color:${accent}55">${lesson.pill}</div>
-          <div class="jsh-glyph" style="color:${accent}">${lesson.glyph}</div>
+          <div class="jsh-glyph" style="color:${accent}">${glyph}</div>
           <div class="jsh-h">${cmd.label}</div>
           <div class="jsh-p">${how}</div>
           ${keyHint}
@@ -459,12 +489,24 @@ export class Shell {
   private showOver(data: OverData, newBest: boolean): void {
     const best = bestScore()
     const secs = Math.max(1, Math.round(data.runtimeMs / 1000))
+    // The chase: a new best celebrates; anything else names the target.
+    const gap = best - data.score
     const bestLine = newBest
       ? '<div class="jsh-best jsh-pop">NEW PERSONAL BEST</div>'
-      : `<div class="jsh-chip">BEST ${best}</div>`
+      : best <= 0 ? ''
+      : gap <= 0 ? `<div class="jsh-chip">MATCHED YOUR BEST — ${best}</div>`
+      : `<div class="jsh-chip">BEST ${best} · ${gap} SHY</div>`
+    // Name the killer, so the death is legible and the retry has a target.
+    const killer = data.deathLabel
+      ? `<div class="jsh-cause">${
+          data.deathInhibit ? 'YOU MOVED — ' + data.deathLabel
+          : data.deathCause === 'timeout' ? 'TOO SLOW — ' + data.deathLabel
+          : 'WRONG MOVE — ' + data.deathLabel}</div>`
+      : ''
     this.show('over', `
-      <div class="jsh-wrap jsh-dim jsh-in">
+      <div class="jsh-wrap jsh-deep jsh-in">
         <div class="jsh-kick" style="color:#ff8b93">RUN OVER</div>
+        ${killer}
         <div class="jsh-score${newBest ? ' jsh-gold' : ''}">0</div>
         ${bestLine}
         <div class="jsh-stats">
@@ -484,7 +526,7 @@ export class Shell {
 
   private showPaused(): void {
     this.show('paused', `
-      <div class="jsh-wrap jsh-dim jsh-in">
+      <div class="jsh-wrap jsh-deep jsh-in">
         <div class="jsh-h">PAUSED</div>
         <div class="jsh-play jsh-pulse">TAP TO RESUME</div>
         <div class="jsh-row">
@@ -504,7 +546,7 @@ export class Shell {
             Three lives. It only gets faster.</div>
           <div class="jsh-legend">
             <b>TAP</b><span>touch the screen</span>
-            <b>SWIPE</b><span>flick in the named direction</span>
+            <b>SWIPE</b><span>flick that way — FLICK UP and PULL DOWN are swipes too</span>
             <b>HOLD</b><span>press until it counts</span>
             <b>PINCH</b><span>two fingers, squeeze together</span>
             <b>SHAKE</b><span>${touch ? 'flick fast, any direction' : 'shake the phone itself'}</span>
@@ -531,8 +573,19 @@ export class Shell {
     else if (name === 'ask') this.showAsk()
     else if (name === 'help') this.showHelp()
     else if (name === 'paused') this.showPaused()
-    else if (name === 'over') this.showOver({ score: 487, bestStreak: 12, issued: 34, runtimeMs: 58200 }, false)
-    else if (name === 'over-best') this.showOver({ score: 1240, bestStreak: 21, issued: 61, runtimeMs: 84100 }, true)
+    else if (name === 'over') {
+      // Seed a plausible best so the chase chip poses truthfully.
+      try { localStorage.setItem(BEST_KEY, '1240') } catch { /* pose only */ }
+      this.showOver({
+        score: 487, bestStreak: 12, issued: 34, runtimeMs: 58200,
+        deathLabel: 'TWIST IT', deathCause: 'timeout', deathInhibit: false,
+      }, false)
+    } else if (name === 'over-best') {
+      this.showOver({
+        score: 1240, bestStreak: 21, issued: 61, runtimeMs: 84100,
+        deathLabel: 'DO NOTHING', deathCause: 'wrong', deathInhibit: true,
+      }, true)
+    }
     else if (name === 'teach-none') {
       this.teach = { key: 'none', cmd: { action: 'none', label: 'DO NOTHING', windowMs: 200, inhibit: true }, timer: null }
       this.showTeach(this.teach.cmd, LESSONS['none'])
@@ -560,8 +613,7 @@ export class Shell {
       case 'over':
         if (now - this.overRevealAt < 350) return   // last-gasp flail guard
         this.opts.onPrime()
-        this.hide()
-        this.opts.onPlay()
+        this.beginRun()
         break
       case 'paused':
         this.hide()
@@ -571,15 +623,23 @@ export class Shell {
     }
   }
 
+  /** Every run start funnels through here so the chase target is armed. A tiny
+   *  best is not worth a mid-run interruption. */
+  private beginRun(): void {
+    this.chaseBest = bestScore()
+    this.bestToastDone = this.chaseBest < 100
+    this.hide()
+    this.opts.onPlay()
+  }
+
   /** The play tap: on touch devices that have not answered the motion question,
    *  explain first — a cold iOS permission dialog gets denied. */
   private startFlow(): void {
     const needsAsk = this.touchDevice && !this.meta.askedMotion &&
       this.motion !== 'granted' && this.meta.moves === 'auto'
     if (needsAsk) { this.showAsk(); return }
-    this.hide()
     void this.opts.requestMotion()
-    this.opts.onPlay()
+    this.beginRun()
   }
 
   private wireButtons(): void {
@@ -605,11 +665,22 @@ export class Shell {
         const nowTouch = !this.touchMovesActive()
         this.meta.moves = nowTouch ? 'touch' : 'motion'
         saveMeta(this.meta)
-        if (!nowTouch) void this.opts.requestMotion()
         this.showHome()
-        this.toast(nowTouch
-          ? 'TOUCH MOVES — SWIPES REPLACE SHAKE / TWIST / FLIP'
-          : 'MOTION MOVES — THE PHONE IS THE CONTROLLER')
+        if (nowTouch) {
+          this.toast('TOUCH MOVES — SWIPES REPLACE SHAKE / TWIST / FLIP')
+        } else {
+          // Motion must actually be possible, or the motion commands would be
+          // physically unanswerable. Verify, and fall back honestly.
+          void this.opts.requestMotion().then((ok) => {
+            if (ok) { this.toast('MOTION MOVES — THE PHONE IS THE CONTROLLER'); return }
+            this.meta.moves = 'touch'
+            saveMeta(this.meta)
+            if (this.screen === 'home') this.showHome()
+            this.toast(this.motion === 'unavailable'
+              ? 'NO MOTION SENSOR HERE — TOUCH MOVES KEPT'
+              : 'MOTION BLOCKED BY THE SYSTEM — TOUCH MOVES KEPT')
+          })
+        }
         break
       }
       case 'help': this.showHelp(); break
@@ -624,23 +695,26 @@ export class Shell {
         this.opts.onHome()
         this.showHome()
         break
-      case 'motion-yes':
+      case 'motion-yes': {
         this.opts.onPrime()
         this.meta.askedMotion = true
         saveMeta(this.meta)
-        void this.opts.requestMotion().then((ok) => {
-          if (!ok) this.toast('MOTION BLOCKED — TOUCH MOVES ON')
-        })
         this.hide()
-        this.opts.onPlay()
+        // The permission call MUST start inside this gesture, but the run must
+        // NOT start underneath the native dialog — begin when it settles.
+        const req = this.opts.requestMotion()
+        void req
+          .then((ok) => { if (!ok) this.toast('MOTION BLOCKED — TOUCH MOVES ON') })
+          .catch(() => undefined)
+          .then(() => this.beginRun())
         break
+      }
       case 'motion-no':
         this.opts.onPrime()
         this.meta.askedMotion = true
         this.meta.moves = 'touch'
         saveMeta(this.meta)
-        this.hide()
-        this.opts.onPlay()
+        this.beginRun()
         break
       default: break
     }
@@ -706,6 +780,7 @@ export class Shell {
   padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
 .jsh-ground{background:radial-gradient(120% 90% at 50% 15%,hsl(228 45% 14%),#06070b)}
 .jsh-dim{background:rgba(4,5,9,.86)}
+.jsh-deep{background:radial-gradient(120% 90% at 50% 15%,#101322,#04050a)}
 .jsh-logo{font-size:clamp(56px,17vw,120px);font-weight:800;letter-spacing:.14em;text-indent:.14em;
   line-height:1;background:linear-gradient(180deg,#fff 30%,#9fb4ff);
   -webkit-background-clip:text;background-clip:text;color:transparent;
@@ -713,6 +788,8 @@ export class Shell {
 .jsh-tag{font-size:clamp(11px,2.9vw,15px);font-weight:700;letter-spacing:.3em;text-indent:.3em;
   color:#aab8e8;opacity:.85}
 .jsh-kick{font-weight:800;font-size:clamp(14px,3.4vw,20px);letter-spacing:.5em;text-indent:.5em;opacity:.85}
+.jsh-cause{font-weight:700;font-size:clamp(12px,3.1vw,15px);letter-spacing:.2em;text-indent:.2em;
+  color:#8b98c4;margin-top:-8px}
 .jsh-chip{font-weight:700;font-size:clamp(12px,3vw,16px);letter-spacing:.14em;color:#dfe6ff;
   border:1.5px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 18px;
   background:rgba(255,255,255,.05)}
@@ -721,7 +798,7 @@ export class Shell {
 .jsh-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px}
 .jsh-btn{appearance:none;border:1.5px solid rgba(255,255,255,.28);border-radius:999px;
   background:rgba(255,255,255,.06);color:#dfe6ff;font-weight:700;letter-spacing:.12em;
-  font-size:clamp(11px,2.8vw,14px);padding:11px 18px;font-family:inherit;cursor:pointer;
+  font-size:clamp(11px,2.8vw,14px);padding:13px 18px;font-family:inherit;cursor:pointer;
   touch-action:manipulation}
 .jsh-btn:active{background:rgba(255,255,255,.16)}
 .jsh-pri{background:#5ce88f;color:#062012;border-color:transparent;

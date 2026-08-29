@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "shoot": "node tools/shoot.mjs",
-    "playtest": "node tools/playtest.mjs"
+    "playtest": "node tools/playtest.mjs",
+    "playtest:latency": "node tools/playtest-latency.mjs",
+    "test": "node --test tests/input.test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.50.0",

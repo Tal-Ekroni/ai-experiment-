@@ -6,6 +6,15 @@ import { Shell, bestScore } from './game/shell'
 import { Action } from './game/types'
 import { intensity } from './game/commands'
 
+// Zero-asset favicon (inline SVG bolt): also stops the browser's automatic
+// /favicon.ico request from 404ing in the console.
+const fav = document.createElement('link')
+fav.rel = 'icon'
+fav.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>" +
+  "<rect width='64' height='64' rx='14' fill='%230b0d12'/>" +
+  "<path d='M36 6 14 38h12l-4 20 24-34H32z' fill='%23ffd76b'/></svg>"
+document.head.append(fav)
+
 const stage = document.getElementById('stage') as HTMLElement
 const renderer = new Renderer(stage)
 const sound = new Sound()
@@ -13,9 +22,13 @@ let engine = new Engine(1)
 
 const headless = new URLSearchParams(location.search).has('headless')
 let running = !headless
-let lastSpoken = ''
+/** issued-index of the last announced command — labels can legitimately repeat
+ *  ("TAP IT. TAP IT."), so the index, not the text, decides re-announcement. */
+let lastSpokenIssued = -1
 /** The tap that starts a run must not leak into the run as a submitted action. */
 let inputGuardUntil = 0
+/** Game over already dispatched to sound + shell for this run. */
+let overHandled = false
 
 const input = new Input({ onAction: (a: Action) => handleAction(a) })
 
@@ -50,15 +63,35 @@ function begin(): void {
   void input.requestMotion()
   engine = new Engine((Math.random() * 1e9) | 0)
   engine.start()
-  lastSpoken = ''
+  lastSpokenIssued = -1
+  overHandled = false
   inputGuardUntil = performance.now() + 300
 }
 
 function goHome(): void {
   sound.stop()
   engine = new Engine(1)                 // idle attract state behind the home screen
-  lastSpoken = ''
+  lastSpokenIssued = -1
+  overHandled = false
   renderer.sync(engine.state)
+}
+
+/** Dispatch the end of the run exactly once, no matter which code path killed
+ *  the player — a timeout resolves inside tick(), but a wrong action resolves
+ *  inside the input event handler, where the tick loop's before/after phase
+ *  comparison can never see the transition. */
+function maybeGameOver(): void {
+  if (overHandled) return
+  const s = engine.state
+  if (s.phase !== 'over') return
+  overHandled = true
+  sound.gameOver()
+  shell.endRun({
+    score: s.score, bestStreak: s.bestStreak, issued: s.issued, runtimeMs: s.runtime,
+    deathLabel: s.command ? s.command.label : null,
+    deathCause: s.lastResult === 'timeout' ? 'timeout' : 'wrong',
+    deathInhibit: !!(s.command && s.command.inhibit),
+  })
 }
 
 function handleAction(a: Action): void {
@@ -74,6 +107,7 @@ function handleAction(a: Action): void {
   const r = engine.state.lastResult
   if (r === 'correct') sound.correct(engine.state.streak)
   else if (r === 'wrong') sound.wrong()
+  maybeGameOver()                        // a wrong action can be the third life
 }
 
 let last = performance.now()
@@ -88,9 +122,11 @@ function tick(now: number) {
   engine.tick(dt)
   const s = engine.state
 
-  // A new command landed: teach it first if it has never been seen, else speak it.
-  if (s.phase === 'awaiting' && s.command && s.command.label !== lastSpoken) {
-    lastSpoken = s.command.label
+  // A new command landed: teach it first if it has never been seen, else speak
+  // it. Keyed on the issued index, not the label — "TAP IT. TAP IT." repeats
+  // are legal and each one must be barked again.
+  if (s.phase === 'awaiting' && s.command && s.issued !== lastSpokenIssued) {
+    lastSpokenIssued = s.issued
     shell.commandLanded(s.command)
     if (!shell.maybeTeach(s.command)) sound.say(s.command.label, intensity(s.issued))
   }
@@ -103,16 +139,11 @@ function tick(now: number) {
     else if (s.lastResult === 'correct') sound.correct(s.streak)
   }
 
-  if (before !== 'over' && s.phase === 'over') {
-    sound.gameOver()
-    shell.endRun({
-      score: s.score, bestStreak: s.bestStreak, issued: s.issued, runtimeMs: s.runtime,
-    })
-  }
+  maybeGameOver()
 
   sound.setIntensity(intensity(s.issued))
   renderer.sync(s)
-  shell.frame(s.phase)
+  shell.frame(s.phase, s.score)
 }
 requestAnimationFrame(tick)
 renderer.sync(engine.state)

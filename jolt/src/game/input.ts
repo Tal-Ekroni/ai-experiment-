@@ -12,9 +12,22 @@
  *    so an ambiguous input emits nothing rather than something.
  *  - tap vs hold is settled by RELEASE TIME, not a racing timer: release before
  *    HOLD_MS with little movement is a tap (however "slow"), still pressed at
- *    HOLD_MS is a hold. The two can never be confused.
+ *    HOLD_MS is a hold. The two can never be confused. Hold is re-evaluated
+ *    CONTINUOUSLY (every sample and again on release), not by a single poll:
+ *    a finger that wobbled past slop at the poll instant and then settled, or
+ *    a hold released after HOLD_MS with no intervening sample, still fires.
  *  - A clear fast swipe fires MID-GESTURE (lower latency than waiting for the
- *    finger to lift), everything less clear is judged on release.
+ *    finger to lift), everything less clear is judged on release. An exactly
+ *    diagonal swipe is ambiguous at ANY distance and stays silent.
+ *
+ *  Latency budget: a recogniser can only be as fast as the physical gesture it
+ *  watches (a hold IS a wait of HOLD_MS; a shake IS two direction reversals).
+ *  GESTURE_LATENCY_MS below is the authoritative additive cost per action.
+ *  Any response window and any playtest bot that ignores it makes late-game
+ *  motion/hold commands unwinnable on a real device while the harness reports
+ *  the game as fair: windowMs must exceed reactionMs + GESTURE_LATENCY_MS[a].
+ *  tools/playtest-latency.mjs measures exactly that against the real engine,
+ *  and tests/input.test.mjs verifies the table's ceilings against the cores.
  *  - shake needs repeated direction REVERSALS above a high-pass-filtered
  *    threshold, so walking or setting the phone down cannot fire it.
  *  - twist is edge-triggered on a fast >=60 degree roll, and must settle before
@@ -25,6 +38,37 @@
 import { Action } from './types'
 
 export type MotionStatus = 'unknown' | 'granted' | 'denied' | 'unavailable'
+
+/** Pressed this long without moving = hold. Released earlier = tap. Kept as a
+ *  module constant because it is also the hold action's physical latency. */
+export const HOLD_MS = 300
+
+/** Additive physical/recogniser latency per action, in milliseconds: the time
+ *  between the player STARTING the gesture and the earliest instant the
+ *  recogniser can emit it. These are ceilings verified by tests/input.test.mjs
+ *  against the real cores (hold fires at exactly HOLD_MS; a vigorous shake
+ *  needs ~2 reversals, ~180-280ms; a fast twist covers 60 degrees in ~250ms;
+ *  physically flipping a phone face-down takes ~500ms).
+ *
+ *  CONSUMERS: commands.ts must ADD the relevant entry to each command's
+ *  response window (an additive term, NOT a multiplier — a multiplier shrinks
+ *  with the ramp while physics does not), and playtest bots must ADD it after
+ *  reactionMs. See tools/playtest-latency.mjs. */
+export const GESTURE_LATENCY_MS: Readonly<Record<Action, number>> = {
+  'tap': 60,
+  'swipe-left': 110, 'swipe-right': 110, 'swipe-up': 110, 'swipe-down': 110,
+  'hold': HOLD_MS,
+  'release': 0,
+  'pinch': 220,
+  'twist': 250,
+  'shake': 280,
+  'flip': 520,
+  'none': 0,
+}
+
+export function gestureLatencyMs(a: Action): number {
+  return GESTURE_LATENCY_MS[a] ?? 0
+}
 
 export interface InputOptions {
   onAction: (a: Action) => void
@@ -68,7 +112,7 @@ export function pointerTuning(vmin: number): PointerTuning {
     flickMinV: 0.5,
     commitDist: clamp(40, vmin * 0.11, 64),
     commitMinV: 0.45,
-    holdMs: 400,
+    holdMs: HOLD_MS,
     dominance: 1.25,
   }
 }
@@ -123,9 +167,22 @@ export class PointerCore {
       return
     }
 
-    // Mid-gesture swipe commit: far AND fast AND direction unambiguous.
     const dx = x - tr.x0, dy = y - tr.y0
     const disp = Math.hypot(dx, dy)
+
+    // Continuous hold: pressed past holdMs and CURRENTLY within slop => hold.
+    // Re-evaluated on every sample (up() folds the final sample through here
+    // too), so a press that drifted out of slop and settled back, or a hold
+    // released after holdMs with no timer poll in between, still fires. The
+    // one-shot poll at t0+holdMs used to miss both — a silent timeout death.
+    if (this.tracks.size === 1 &&
+        t - tr.t0 >= this.tune.holdMs && disp <= this.tune.tapSlop) {
+      this.consumed = true
+      this.emit('hold')
+      return
+    }
+
+    // Mid-gesture swipe commit: far AND fast AND direction unambiguous.
     const vNow = dt > 0 ? d / Math.max(dt, 8) : 0
     if (disp >= this.tune.commitDist && vNow >= this.tune.commitMinV &&
         this.dominant(dx, dy, 1.4) !== null) {
@@ -147,7 +204,11 @@ export class PointerCore {
     const tn = this.tune
 
     // Swipe first (a fast flick beats the tap check), then tap, else nothing.
-    const dir = this.dominant(dx, dy, disp >= 40 ? 1 : tn.dominance)
+    // Long swipes get a laxer ratio but NEVER 1: at ratio 1 an exactly
+    // diagonal 45-degree swipe resolved to horizontal — a guess, and a life.
+    // Strict dominance keeps the module's silence-over-guess rule at every
+    // distance; a genuinely diagonal input emits nothing.
+    const dir = this.dominant(dx, dy, disp >= 40 ? 1.06 : tn.dominance)
     if (dir !== null &&
         (disp >= tn.swipeMinDist || (disp >= tn.flickMinDist && tr.peakV >= tn.flickMinV))) {
       this.consumed = true
@@ -169,7 +230,9 @@ export class PointerCore {
   }
 
   /** Time-based check: still pressed past holdMs without moving => hold.
-   *  Call at/after t0 + holdMs (a timer, or any later sample). */
+   *  Covers the perfectly-still press that generates no move samples; move()
+   *  and up() re-evaluate the same condition on every later sample, so this
+   *  being a one-shot timer is no longer a way to lose a hold. */
   poll(t: number): void {
     if (this.consumed || this.pinching || this.tracks.size !== 1) return
     const tr = this.tracks.values().next().value as Track
@@ -354,8 +417,6 @@ export class FlipCore {
 // motion permission dance.
 // ---------------------------------------------------------------------------
 
-const MOTION_ACTIONS: ReadonlySet<Action> = new Set<Action>(['shake', 'twist', 'flip'])
-
 export class Input {
   /** True once the device has granted motion access (iOS requires a prompt). */
   motionEnabled = false
@@ -373,9 +434,10 @@ export class Input {
   private detach: Array<() => void> = []
   private sawSensor = false
   private sawOrientT = 0
-  private keyboardActive = false
   private probeTimer: number | null = null
+  private captured = true
   private prevTouchAction: string | null = null
+  private prevBodyTouchAction: string | null = null
 
   constructor(opts: InputOptions) {
     this.opts = opts
@@ -390,12 +452,29 @@ export class Input {
     if (typeof addEventListener === 'function') this.attach()
   }
 
-  /** Can the player, on THIS device right now, perform the action? Motion
-   *  actions need working sensors (or a keyboard — desktop fallback). Other
-   *  modules should use this to avoid issuing commands that cannot be done. */
-  canPerform(a: Action): boolean {
-    if (!MOTION_ACTIONS.has(a)) return true
-    return this.keyboardActive || (this.motionEnabled && this.sawSensor)
+  /** While captured (gameplay), the page's native touch behaviours — scroll
+   *  panning and long-press — are suppressed so they cannot steal a gesture
+   *  mid-run; a stolen swipe is a missed life. Shell screens that need to
+   *  scroll should release the capture and re-take it when play resumes:
+   *  either call this directly, or dispatch on window
+   *    new CustomEvent('jolt:gesture-capture', { detail: { on: false } })
+   *  (mirrors the jolt:motion-status pattern, so shell need not import us).
+   *  Defaults ON — gameplay reliability comes first. */
+  setCaptured(on: boolean): void {
+    if (this.captured === on) return
+    this.captured = on
+    this.applyCapture()
+  }
+
+  private applyCapture(): void {
+    if (typeof document === 'undefined') return
+    const html = document.documentElement, body = document.body
+    if (this.prevTouchAction === null) this.prevTouchAction = html.style.touchAction
+    if (body && this.prevBodyTouchAction === null) this.prevBodyTouchAction = body.style.touchAction
+    // 'auto' (not '') on release: index.html's stylesheet says touch-action:
+    // none, so an empty inline value would fall back to unscrollable.
+    html.style.touchAction = this.captured ? 'none' : 'auto'
+    if (body) body.style.touchAction = this.captured ? 'none' : 'auto'
   }
 
   private attach(): void {
@@ -429,15 +508,22 @@ export class Input {
     on('pointercancel', cancel)
 
     // Keep the browser's own gestures (scroll, pinch-zoom, long-press menu)
-    // from stealing ours. This is an input concern: a stolen swipe is a miss.
-    if (typeof document !== 'undefined') {
-      this.prevTouchAction = document.documentElement.style.touchAction
-      document.documentElement.style.touchAction = 'none'
+    // from stealing ours DURING GAMEPLAY. Scoped to the capture flag rather
+    // than the Input's lifetime, so a scrollable shell overlay can scroll.
+    this.applyCapture()
+    const swallowTouch = (e: TouchEvent) => {
+      if (this.captured && e.cancelable) e.preventDefault()
     }
-    const swallowTouch = (e: TouchEvent) => { if (e.cancelable) e.preventDefault() }
     on('touchmove', swallowTouch, { passive: false })
-    const swallowCtx = (e: Event) => e.preventDefault()
+    const swallowCtx = (e: Event) => { if (this.captured) e.preventDefault() }
     on('contextmenu', swallowCtx)
+    // Shell modules toggle the capture without importing us (see setCaptured).
+    const captureEvt: EventListener = (e) => {
+      const on = (e as CustomEvent<{ on?: boolean }>).detail?.on
+      if (typeof on === 'boolean') this.setCaptured(on)
+    }
+    addEventListener('jolt:gesture-capture', captureEvt)
+    this.detach.push(() => removeEventListener('jolt:gesture-capture', captureEvt))
     // iOS Safari's own pinch-zoom gesture (non-standard event).
     const swallowGesture: EventListener = (e) => e.preventDefault()
     addEventListener('gesturestart', swallowGesture)
@@ -476,16 +562,17 @@ export class Input {
     on('deviceorientation', orient)
 
     // --- keyboard fallback (desktop and the headless harness) --------------
+    // No KeyR/'release' binding: commands.ts never issues 'release', so a
+    // mapping for it would be unreachable surface in a reliability module.
     const key = (e: KeyboardEvent) => {
       if (e.repeat) return   // key autorepeat must not machine-gun actions
       const map: Record<string, Action> = {
         Space: 'tap', ArrowLeft: 'swipe-left', ArrowRight: 'swipe-right',
         ArrowUp: 'swipe-up', ArrowDown: 'swipe-down',
         KeyT: 'twist', KeyS: 'shake', KeyH: 'hold', KeyP: 'pinch', KeyF: 'flip',
-        KeyR: 'release',
       }
       const a = map[e.code]
-      if (a) { e.preventDefault(); this.keyboardActive = true; this.opts.onAction(a) }
+      if (a) { e.preventDefault(); this.opts.onAction(a) }
     }
     on('keydown', key)
   }
@@ -512,7 +599,8 @@ export class Input {
    *  any motion event fires — call this from a tap handler. Idempotent: cached
    *  after the first meaningful answer. Resolves true only when motion can
    *  genuinely work; on denial or absent hardware the game should stop issuing
-   *  motion commands (see canPerform / onMotionStatus) instead of pretending. */
+   *  motion commands (see onMotionStatus / jolt:motion-status) instead of
+   *  pretending. */
   async requestMotion(): Promise<boolean> {
     if (this.motionStatus === 'granted') return true
     if (this.motionStatus === 'denied') return false
@@ -555,9 +643,15 @@ export class Input {
     this.detach = []
     if (this.holdTimer !== null) { clearTimeout(this.holdTimer); this.holdTimer = null }
     if (this.probeTimer !== null) { clearTimeout(this.probeTimer); this.probeTimer = null }
-    if (typeof document !== 'undefined' && this.prevTouchAction !== null) {
-      document.documentElement.style.touchAction = this.prevTouchAction
-      this.prevTouchAction = null
+    if (typeof document !== 'undefined') {
+      if (this.prevTouchAction !== null) {
+        document.documentElement.style.touchAction = this.prevTouchAction
+        this.prevTouchAction = null
+      }
+      if (this.prevBodyTouchAction !== null && document.body) {
+        document.body.style.touchAction = this.prevBodyTouchAction
+        this.prevBodyTouchAction = null
+      }
     }
   }
 }

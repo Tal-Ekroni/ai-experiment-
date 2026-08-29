@@ -9,20 +9,23 @@
  *  - A lookahead scheduler (25ms poll, 120ms horizon) sequences a 16-step
  *    music bed whose tempo, layer count, filter brightness and KEY all rise
  *    with intensity (0..1). Layers: kick → hats → bassline → backbeat snare →
- *    driven double-time. The whole bed shifts up through a minor scale as the
- *    run escalates, so the pitch of the room literally rises with your pulse.
- *  - Every command lands with a per-action EARCON (a distinctive synthesised
- *    signature: swipes sweep and pan in their direction, SHAKE trills, TWIST
- *    bends, DO NOTHING is a flat low buzz). Speech accompanies the earcon
- *    while windows are long; once windows drop near speech duration the voice
- *    steps aside and the earcons — which the player has been hearing since
- *    command one — carry meaning alone. Speech therefore never lags or piles
- *    up at 500ms windows.
+ *    driven double-time. Key changes are BAR-ALIGNED and announced with a
+ *    crash; the bassline alternates between two riffs on a 4-bar phrase and
+ *    every 4th bar ends in a snare fill, so the bed evolves rather than loops.
+ *  - Player-facing hits are QUANTISED: earcons and the correct-answer chime
+ *    snap to the next 16th of the grid, so the player's actions land inside
+ *    the music instead of against it (the Rez trick).
+ *  - The VOICE has a script, not just labels: 2-3 phrasings per command picked
+ *    at random, praise lines at streak milestones, and a performance-tiered
+ *    taunt plus a spoken run callout at game over. Past intensity 0.5 the
+ *    announcer does not fall silent — it switches to clipped one-syllable
+ *    barks at maximum rate, so the voice survives into the endgame.
  *  - Speech is actively managed: a deliberately ranked voice, rate/pitch that
  *    climb with intensity, cancel-before-speak with a deferred re-speak (the
- *    Chrome cancel→speak-drops-the-utterance bug), and an instant drop to
- *    earcon-only if the engine is still speaking when the next command lands.
- *  - A ticking countdown tracks each response window and accelerates toward
+ *    Chrome cancel→speak-drops-the-utterance bug).
+ *  - A ticking countdown tracks each response window — computed from the REAL
+ *    difficulty curve (commands.ts windowFor × the command's windowScale, the
+ *    issued index recovered by inverting intensity()) — and accelerates toward
  *    the deadline; it is cancelled the moment the command resolves.
  *  - After every resolution an anticipation pickup (two rising ticks) is
  *    scheduled to land just before the next command, so the player can time
@@ -33,27 +36,11 @@
  *  - Autoplay: the AudioContext is only created/resumed inside start(), which
  *    the shell calls from a user gesture; every method guards on ctx.
  */
+import { windowFor, intensity, available, INHIBIT_WINDOW } from './commands'
 
-/** Approximate response window (ms) for a given intensity — mirrors the shape
- *  of the difficulty ramp without importing the (in-flux) commands module.
- *  Only used to pace the countdown pulse, so approximation is fine: the pulse
- *  is cancelled on resolve anyway. */
-const WIN_EST: Array<[number, number]> = [
-  [0, 1700], [0.05, 1050], [0.11, 700], [0.21, 580],
-  [0.35, 522], [0.47, 402], [0.78, 330], [1, 264],
-]
-function estWindowMs(i: number): number {
-  const x = Math.min(1, Math.max(0, i))
-  for (let k = 1; k < WIN_EST.length; k++) {
-    const [x1, y1] = WIN_EST[k - 1]
-    const [x2, y2] = WIN_EST[k]
-    if (x <= x2) return y1 + (y2 - y1) * ((x - x1) / (x2 - x1))
-  }
-  return 264
-}
-
-/** Engine's resolve gap (pause before the next command), estimated from
- *  intensity: 420ms shrinking to 140ms, ×1.6 after a mistake. */
+/** Engine's resolve gap (pause before the next command). Mirrors the engine's
+ *  RESOLVE_MS/RESOLVE_FLOOR (420→140ms, ×1.6 after a mistake), which the
+ *  engine does not export; formula verified against engine.resolveGap(). */
 function estGapMs(i: number, afterMistake: boolean): number {
   const g = 420 - 280 * Math.min(1, Math.max(0, i))
   return afterMistake ? g * 1.6 : g
@@ -83,9 +70,53 @@ function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null 
   return best
 }
 
-/** Intensity above which speech is dropped entirely in favour of earcons
- *  (windows ~<420ms — shorter than a two-word utterance). */
-const EARCON_ONLY_AT = 0.5
+/** Intensity above which the announcer switches from full phrasings to
+ *  clipped one-syllable barks at maximum rate. The voice never goes silent —
+ *  a bark fits even the 264ms floor window, and the earcon (played at exact
+ *  onset since command one) still carries instant meaning. */
+const BARK_AT = 0.5
+
+// ----------------------------------------------------------------- the script
+// Personality lives in TEXT. Original lines — no toy's or game's voice copied.
+
+/** 2-3 alternate phrasings per command, verb kept prominent so meaning is
+ *  never in doubt (the label is on screen too). */
+const PHRASES: Record<string, string[]> = {
+  'TAP IT': ['Tap it!', 'Tap it, go!', 'Give it a tap!'],
+  'SWIPE LEFT': ['Swipe left!', 'Left! Go left!', 'To the left!'],
+  'SWIPE RIGHT': ['Swipe right!', 'Right! Go right!', 'To the right!'],
+  'SHAKE IT': ['Shake it!', 'Shake it up!', 'Shake, shake, shake!'],
+  'TWIST IT': ['Twist it!', 'Give it a twist!', 'Twist it round!'],
+  'FLICK UP': ['Flick up!', 'Up! Flick up!', 'Flick it up!'],
+  'PULL DOWN': ['Pull down!', 'Down! Pull down!', 'Drag it down!'],
+  'HOLD IT': ['Hold it!', 'Hold it down!', 'Press and hold!'],
+  'PINCH IT': ['Pinch it!', 'Give it a pinch!', 'Pinch it shut!'],
+  'FLIP IT': ['Flip it!', 'Flip it over!', 'Turn it over!'],
+  'DO NOTHING': ['Do nothing!', "Don't you dare!", 'Hands off!'],
+}
+
+/** One-syllable(ish) barks for the endgame, when windows drop under 400ms. */
+const BARKS: Record<string, string> = {
+  'TAP IT': 'Tap!', 'SWIPE LEFT': 'Left!', 'SWIPE RIGHT': 'Right!',
+  'SHAKE IT': 'Shake!', 'TWIST IT': 'Twist!', 'FLICK UP': 'Up!',
+  'PULL DOWN': 'Down!', 'HOLD IT': 'Hold!', 'PINCH IT': 'Pinch!',
+  'FLIP IT': 'Flip!', 'DO NOTHING': 'Wait!',
+}
+
+/** Streak-milestone praise, tiered by how hot the streak is. */
+const PRAISE_LOW = ['Nice.', 'Not bad.', 'Keep up!']
+const PRAISE_MID = ['Impressive!', "You're quick!", 'Sharp!']
+const PRAISE_HOT = ['On fire!', 'Unstoppable!', 'Show-off.', 'Machine!']
+
+/** Game-over taunts, tiered by commands survived. Original attitude. */
+const OVER_SHORT = ["That's it? Already?", "Blink and it's over.", 'The warm-up beat you.']
+const OVER_MID = ['Down you go.', 'The beat wins this round.', 'Caught you slipping.']
+const OVER_GOOD = ['A worthy run. Still mine.', 'You almost had it.', 'Respect. Now go again.']
+const OVER_GREAT = ['Okay. THAT was a run.', 'You scare me a little.', 'The machine bows. Barely.']
+
+function oneOf(list: string[]): string {
+  return list[Math.floor(Math.random() * list.length)]
+}
 
 export class Sound {
   private ctx: AudioContext | null = null
@@ -106,6 +137,8 @@ export class Sound {
   private schedulerId: number | null = null
   private nextNoteTime = 0
   private step = 0
+  private bar = 0
+  private shift = 0            // current semitone key shift; changes only at bar starts
   private beatOn = false
   private intensityV = 0
 
@@ -116,6 +149,15 @@ export class Sound {
   private voice: SpeechSynthesisVoice | null = null
   private voicesHooked = false
   private speakTimer: number | null = null
+  private overTimer: number | null = null
+
+  // Run stats tracked internally (gameOver() receives no report), so the
+  // announcer can call out the run it just watched.
+  private runCorrect = 0
+  private runBestStreak = 0
+
+  // Label → window scale/inhibit, built lazily from the real command specs.
+  private specMap: Map<string, { scale: number; inhibit: boolean }> | null = null
 
   muted = false
 
@@ -133,8 +175,16 @@ export class Sound {
     if (this.ctx.state === 'suspended') void this.ctx.resume()
     this.chooseVoice()
     this.cancelPending()
+    // A replay cuts the previous run's game-over speech short.
+    if (this.overTimer !== null) { clearTimeout(this.overTimer); this.overTimer = null }
+    if (typeof speechSynthesis !== 'undefined'
+      && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel()
+    this.runCorrect = 0
+    this.runBestStreak = 0
     // (Re)arm the bed.
     this.step = 0
+    this.bar = 0
+    this.shift = 0
     this.nextNoteTime = this.ctx.currentTime + 0.06
     this.beatOn = true
     if (this.musicBus) {
@@ -286,14 +336,69 @@ export class Sound {
     this.fire(src, [f, g], t + dur + 0.05)
   }
 
+  /** The next 16th-note grid line at or after "now". Earcons and correct-hits
+   *  snap here so player-facing sounds land INSIDE the music (Rez-style)
+   *  instead of off-beat against a 180 BPM bed. Worst-case added latency is
+   *  one 16th (83ms at top tempo); the countdown still tracks the real
+   *  deadline from true onset, so fairness is untouched. */
+  private nextGrid(): number {
+    if (!this.ctx) return 0
+    const now = this.ctx.currentTime
+    if (!this.beatOn) return now
+    const stepDur = 60 / this.bpm() / 4
+    // nextNoteTime sits at the lookahead horizon; walk back to the first grid
+    // line that has not yet sounded.
+    let t = this.nextNoteTime
+    while (t - stepDur > now + 0.003) t -= stepDur
+    return Math.max(now, t)
+  }
+
+  // -------------------------------------------------- real-difficulty lookup
+
+  /** Recover the issued index from an intensity value by inverting
+   *  commands.intensity() (strictly monotonic) — no duplicated constants. */
+  private issuedFrom(i: number): number {
+    let lo = 0
+    let hi = 400
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (intensity(mid) < i - 1e-9) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
+  private specFor(label: string): { scale: number; inhibit: boolean } {
+    if (!this.specMap) {
+      this.specMap = new Map()
+      for (const s of available(Number.MAX_SAFE_INTEGER)) {
+        this.specMap.set(s.label.toUpperCase(), { scale: s.windowScale ?? 1, inhibit: !!s.inhibit })
+      }
+    }
+    return this.specMap.get(label.toUpperCase()) ?? { scale: 1, inhibit: false }
+  }
+
+  /** The ACTUAL response window for this command, from the real curve: the
+   *  caller passes intensity(issued) (post-increment), the command was built
+   *  at issued-1, and per-action windowScale is applied — so a FLIP countdown
+   *  no longer finishes ~270ms early. */
+  private windowMsFor(label: string, i: number): number {
+    const spec = this.specFor(label)
+    if (spec.inhibit) return INHIBIT_WINDOW
+    const issued = Math.max(0, this.issuedFrom(i) - 1)
+    return Math.round(windowFor(issued) * spec.scale)
+  }
+
   // ------------------------------------------------------------- sequencer
 
   private bpm(): number {
     return 96 + 84 * this.intensityV   // 96 → 180
   }
 
-  /** Semitone key shift rises through a minor scale with intensity. */
-  private keyShift(): number {
+  /** Semitone key shift rises through a minor scale with intensity. This is
+   *  the TARGET; scheduleStep only adopts it at bar starts (step 0), with a
+   *  crash to mark the change, so the transposition is musical, not abrupt. */
+  private keyTarget(): number {
     const steps = [0, 2, 3, 5, 7]
     return steps[Math.min(steps.length - 1, Math.floor(this.intensityV * steps.length))]
   }
@@ -305,13 +410,28 @@ export class Sound {
       if (!this.muted) this.scheduleStep(this.step, this.nextNoteTime)
       this.nextNoteTime += 60 / this.bpm() / 4   // one 16th note
       this.step = (this.step + 1) % 16
+      if (this.step === 0) this.bar++
     }
   }
+
+  /** Two bass riffs, alternating on a 4-bar phrase, so the bed has an A and a
+   *  B section instead of one loop for the whole run. */
+  private static RIFF_A = [0, 12, 0, 10, 0, 12, 7, 10]
+  private static RIFF_B = [0, 12, 3, 10, 0, 15, 12, 10]
 
   private scheduleStep(step: number, t: number): void {
     const i = this.intensityV
     const bus = this.musicBus
-    const root = 55 * Math.pow(2, this.keyShift() / 12)
+
+    // Key changes commit only on the downbeat, marked with a crash.
+    if (step === 0) {
+      const target = this.keyTarget()
+      if (target !== this.shift) {
+        this.shift = target
+        this.crash(t)
+      }
+    }
+    const root = 55 * Math.pow(2, this.shift / 12)
 
     // Kick: quarters always; a driving extra hit late.
     if (step % 4 === 0) this.kick(t, 0.42)
@@ -331,9 +451,18 @@ export class Sound {
       this.note({ at: t, freq: 240, endFreq: 170, durMs: 70, type: 'triangle', gain: 0.1, dest: bus })
     }
 
-    // Bassline: 8th-note minor riff; doubles to 16ths near the top.
+    // Fill: every 4th bar ends with four rising 16th snare hits.
+    if (i >= 0.3 && this.bar % 4 === 3 && step >= 12) {
+      const k = step - 12
+      this.noise({
+        at: t, durMs: 70, gain: 0.08 + k * 0.025,
+        filter: 'bandpass', freq: 1400 + k * 500, q: 1, dest: bus,
+      })
+    }
+
+    // Bassline: 8th-note minor riff (A/B phrases); doubles to 16ths near the top.
     if (i >= 0.26) {
-      const riff = [0, 12, 0, 10, 0, 12, 7, 10]
+      const riff = (this.bar % 8) < 4 ? Sound.RIFF_A : Sound.RIFF_B
       const play = (tt: number, gg: number) => {
         const semis = riff[Math.floor(step / 2) % riff.length]
         this.note({
@@ -348,6 +477,12 @@ export class Sound {
 
   private kick(t: number, gain: number): void {
     this.note({ at: t, freq: 155, endFreq: 44, durMs: 100, type: 'sine', gain, dest: this.musicBus, attackMs: 2 })
+  }
+
+  /** Crash marker for a key change: a bright noise splash plus a low boom. */
+  private crash(t: number): void {
+    this.noise({ at: t, durMs: 480, gain: 0.14, filter: 'highpass', freq: 4200, endFreq: 9000, dest: this.musicBus })
+    this.note({ at: t, freq: 180, endFreq: 50, durMs: 240, type: 'sine', gain: 0.3, dest: this.musicBus, attackMs: 2 })
   }
 
   /** Briefly duck the music bed (under speech, or hard after a failure). */
@@ -372,108 +507,127 @@ export class Sound {
     }
   }
 
-  /** Speak a command. `rate` is the run intensity 0..1 (see main.ts).
-   *  Every command gets its earcon at exact onset; speech rides along while
-   *  windows are long, and drops out (never lags, never overlaps) when they
-   *  are not. */
-  say(text: string, rate = 1): void {
-    if (this.muted) return
-    this.cancelPending()          // previous command's countdown is over
-    this.earcon(text)
-    this.countdown(rate)
-
-    if (typeof speechSynthesis === 'undefined') return
-    if (this.speakTimer !== null) { clearTimeout(this.speakTimer); this.speakTimer = null }
-
-    // Past this point windows are shorter than an utterance — earcons only.
-    if (rate >= EARCON_ONLY_AT) {
-      if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel()
-      return
-    }
-
-    this.duck(0.55, 0.45)
-    const speak = () => {
+  /** Speak one line with the cancel-before-speak dance. `queue: true` lets a
+   *  line ride behind whatever is already speaking (praise, score callouts)
+   *  instead of cutting it off. */
+  private speakLine(text: string, opts: { rate: number; pitch: number; volume?: number; queue?: boolean }): void {
+    if (this.muted || typeof speechSynthesis === 'undefined') return
+    const go = () => {
       const u = new SpeechSynthesisUtterance(text)
       if (this.voice) u.voice = this.voice
-      const inhibit = text.toUpperCase().includes('NOTHING')
-      // The voice leans in as the run escalates; the trap command drops low.
-      u.rate = Math.min(2, 1.02 + rate * 1.1)
-      u.pitch = inhibit ? 0.8 : Math.min(2, 1.05 + rate * 0.35)
-      u.volume = 1
+      u.rate = Math.min(2, opts.rate)
+      u.pitch = Math.min(2, opts.pitch)
+      u.volume = opts.volume ?? 1
       speechSynthesis.speak(u)
     }
+    if (opts.queue) { go(); return }
+    if (this.speakTimer !== null) { clearTimeout(this.speakTimer); this.speakTimer = null }
     if (speechSynthesis.speaking || speechSynthesis.pending) {
       // cancel() immediately followed by speak() drops the utterance on some
       // engines — defer the re-speak one macrotask.
       speechSynthesis.cancel()
-      this.speakTimer = window.setTimeout(() => { this.speakTimer = null; speak() }, 30)
+      this.speakTimer = window.setTimeout(() => { this.speakTimer = null; go() }, 30)
     } else {
-      speak()
+      go()
     }
   }
 
-  /** Distinctive synthesised signature per command, played at exact command
-   *  onset. Directional commands sweep and PAN in their direction, so the ear
-   *  learns them long before speech has to drop away. */
+  /** Announce a command. `rate` is the run intensity 0..1 (see main.ts).
+   *  Every command gets its earcon (snapped to the music grid); the announcer
+   *  speaks a varied phrasing while windows are long and switches to clipped
+   *  barks — never silence — once they are not. `windowMs`, when provided by
+   *  the caller, overrides the curve-derived response window. */
+  say(text: string, rate = 1, windowMs?: number): void {
+    if (this.muted) return
+    this.cancelPending()          // previous command's countdown is over
+    this.earcon(text)
+    this.countdown(windowMs ?? this.windowMsFor(text, rate))
+
+    if (typeof speechSynthesis === 'undefined') return
+
+    const inhibit = text.toUpperCase().includes('NOTHING')
+    if (rate >= BARK_AT) {
+      // Endgame: one-syllable bark at max rate. The voice stays in the fight.
+      const bark = BARKS[text.toUpperCase()] ?? `${text.split(' ')[0]}!`
+      this.duck(0.7, 0.25)
+      this.speakLine(bark, { rate: 2, pitch: inhibit ? 0.8 : 1.35 })
+      return
+    }
+
+    this.duck(0.55, 0.45)
+    const variants = PHRASES[text.toUpperCase()] ?? [text]
+    // The voice leans in as the run escalates; the trap command drops low.
+    this.speakLine(oneOf(variants), {
+      rate: 1.02 + rate * 1.1,
+      pitch: inhibit ? 0.8 : 1.05 + rate * 0.35,
+    })
+  }
+
+  /** Distinctive synthesised signature per command, snapped to the next 16th
+   *  of the grid so commands land ON the music. Directional commands sweep and
+   *  PAN in their direction, so the ear learns them long before speech has to
+   *  shrink to barks. */
   private earcon(label: string): void {
     if (!this.ctx) return
     const L = label.toUpperCase()
+    const t0 = this.nextGrid()
     if (L.includes('NOTHING')) {
       // Flat, low, deliberately unappetising — the sound of "don't".
-      this.note({ freq: 92, durMs: 220, type: 'sawtooth', gain: 0.14 })
-      this.note({ freq: 97, durMs: 220, type: 'sawtooth', gain: 0.1 })
+      this.note({ at: t0, freq: 92, durMs: 220, type: 'sawtooth', gain: 0.14 })
+      this.note({ at: t0, freq: 97, durMs: 220, type: 'sawtooth', gain: 0.1 })
       return
     }
     if (L.includes('LEFT')) {
-      this.note({ freq: 1200, endFreq: 500, durMs: 120, type: 'square', gain: 0.12, pan: -0.8 })
+      this.note({ at: t0, freq: 1200, endFreq: 500, durMs: 120, type: 'square', gain: 0.12, pan: -0.8 })
       return
     }
     if (L.includes('RIGHT')) {
-      this.note({ freq: 1200, endFreq: 500, durMs: 120, type: 'square', gain: 0.12, pan: 0.8 })
+      this.note({ at: t0, freq: 1200, endFreq: 500, durMs: 120, type: 'square', gain: 0.12, pan: 0.8 })
       return
     }
     if (L.includes('UP') || L.includes('FLICK')) {
-      this.note({ freq: 500, endFreq: 1500, durMs: 120, type: 'square', gain: 0.12 })
+      this.note({ at: t0, freq: 500, endFreq: 1500, durMs: 120, type: 'square', gain: 0.12 })
       return
     }
     if (L.includes('DOWN') || L.includes('PULL')) {
-      this.note({ freq: 900, endFreq: 300, durMs: 140, type: 'square', gain: 0.12 })
+      this.note({ at: t0, freq: 900, endFreq: 300, durMs: 140, type: 'square', gain: 0.12 })
       return
     }
     if (L.includes('SHAKE')) {
       for (let k = 0; k < 4; k++) {
-        this.note({ at: this.ctx.currentTime + k * 0.045, freq: k % 2 ? 1180 : 880, durMs: 40, type: 'square', gain: 0.11 })
+        this.note({ at: t0 + k * 0.045, freq: k % 2 ? 1180 : 880, durMs: 40, type: 'square', gain: 0.11 })
       }
       return
     }
     if (L.includes('TWIST')) {
-      this.note({ freq: 620, endFreq: 980, durMs: 90, type: 'triangle', gain: 0.14 })
-      this.note({ at: this.ctx.currentTime + 0.09, freq: 980, endFreq: 620, durMs: 90, type: 'triangle', gain: 0.14 })
+      this.note({ at: t0, freq: 620, endFreq: 980, durMs: 90, type: 'triangle', gain: 0.14 })
+      this.note({ at: t0 + 0.09, freq: 980, endFreq: 620, durMs: 90, type: 'triangle', gain: 0.14 })
       return
     }
     if (L.includes('HOLD')) {
-      this.note({ freq: 660, durMs: 260, type: 'triangle', gain: 0.13, attackMs: 20 })
+      this.note({ at: t0, freq: 660, durMs: 260, type: 'triangle', gain: 0.13, attackMs: 20 })
       return
     }
     if (L.includes('PINCH')) {
-      this.note({ freq: 500, endFreq: 780, durMs: 110, type: 'sine', gain: 0.12, pan: -0.5 })
-      this.note({ freq: 1150, endFreq: 780, durMs: 110, type: 'sine', gain: 0.12, pan: 0.5 })
+      this.note({ at: t0, freq: 500, endFreq: 780, durMs: 110, type: 'sine', gain: 0.12, pan: -0.5 })
+      this.note({ at: t0, freq: 1150, endFreq: 780, durMs: 110, type: 'sine', gain: 0.12, pan: 0.5 })
       return
     }
     if (L.includes('FLIP')) {
-      this.note({ freq: 440, durMs: 70, type: 'square', gain: 0.12 })
-      this.note({ at: this.ctx.currentTime + 0.075, freq: 880, durMs: 90, type: 'square', gain: 0.13 })
+      this.note({ at: t0, freq: 440, durMs: 70, type: 'square', gain: 0.12 })
+      this.note({ at: t0 + 0.075, freq: 880, durMs: 90, type: 'square', gain: 0.13 })
       return
     }
     // TAP and anything unrecognised: one bright poke.
-    this.note({ freq: 1320, durMs: 70, type: 'square', gain: 0.13 })
+    this.note({ at: t0, freq: 1320, durMs: 70, type: 'square', gain: 0.13 })
   }
 
   /** A quiet pulse that tracks the response window and accelerates toward the
-   *  deadline. Cancelled on resolve (correct/wrong/next say). */
-  private countdown(i: number): void {
+   *  deadline. `windowMs` is the command's REAL window (curve × windowScale),
+   *  so the last tick lands at the true deadline. Cancelled on resolve. */
+  private countdown(windowMs: number): void {
     if (!this.ctx) return
-    const win = estWindowMs(i) / 1000
+    const win = windowMs / 1000
     if (win < 0.45) return                    // music tempo carries urgency here
     const t0 = this.ctx.currentTime
     const n = 6
@@ -504,22 +658,32 @@ export class Sound {
   correct(streak: number): void {
     if (!this.ctx || this.muted) return
     this.cancelPending()
+    this.runCorrect++
+    this.runBestStreak = Math.max(this.runBestStreak, streak)
     // Rising pentatonic step per streak — the sound of a run going well —
     // thickened with a fifth, and an octave shimmer once the streak is hot.
+    // Snapped to the next 16th so the player's hit becomes part of the music.
     const scale = [0, 2, 4, 7, 9]
     const n = scale[streak % scale.length] + 12 * Math.floor((streak % 15) / 5)
     const f = 440 * Math.pow(2, n / 12)
-    this.note({ freq: f, durMs: 150, type: 'triangle', gain: 0.24 })
-    this.note({ freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.1 })
-    if (streak >= 10) this.note({ at: this.ctx.currentTime + 0.04, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
+    const g0 = this.nextGrid()
+    this.note({ at: g0, freq: f, durMs: 150, type: 'triangle', gain: 0.24 })
+    this.note({ at: g0, freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.1 })
+    if (streak >= 10) this.note({ at: g0 + 0.04, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
     // Milestone flourish every 5: a fast ascending arpeggio.
     if (streak > 0 && streak % 5 === 0) {
-      const t0 = this.ctx.currentTime + 0.05
+      const t0 = g0 + 0.05
       const arp = [0, 4, 7, 12]
       for (let k = 0; k < arp.length; k++) {
         this.note({ at: t0 + k * 0.055, freq: f * Math.pow(2, arp[k] / 12), durMs: 90, type: 'triangle', gain: 0.14 })
       }
       this.noise({ at: t0, durMs: 300, gain: 0.05, filter: 'highpass', freq: 8000 })
+    }
+    // Spoken praise at streak milestones — short enough to fit the gap, rides
+    // behind (never cancels) anything already speaking.
+    if (streak === 5 || (streak > 0 && streak % 10 === 0)) {
+      const lines = streak >= 20 ? PRAISE_HOT : streak >= 10 ? PRAISE_MID : PRAISE_LOW
+      this.speakLine(oneOf(lines), { rate: 1.3 + this.intensityV * 0.6, pitch: 1.15, queue: true })
     }
     this.anticipate(false)
   }
@@ -527,8 +691,9 @@ export class Sound {
   wrong(): void {
     if (!this.ctx || this.muted) return
     this.cancelPending()
-    // Punchy: a deep thud, a detuned saw falling out of tune, and a slammed
-    // noise impact — while the music bed drops out from under you.
+    // Punchy and deliberately OFF-grid: failure interrupts the music rather
+    // than joining it — a deep thud, a detuned saw falling out of tune, and a
+    // slammed noise impact, while the bed drops out from under you.
     this.duck(0.25, 0.55)
     this.note({ freq: 130, endFreq: 38, durMs: 260, type: 'sine', gain: 0.5, attackMs: 2 })
     this.note({ freq: 220, endFreq: 62, durMs: 340, type: 'sawtooth', gain: 0.2 })
@@ -564,6 +729,24 @@ export class Sound {
     }
     this.note({ at: t + 0.12, freq: 120, endFreq: 30, durMs: 900, type: 'sine', gain: 0.35, attackMs: 4 })
     this.noise({ at: t + 0.1, durMs: 1100, gain: 0.12, filter: 'lowpass', freq: 4200, endFreq: 120 })
+
+    // The announcer gets the last word: a performance-tiered taunt, then the
+    // run called out loud. Delayed so the crash lands first; cancelled if the
+    // player restarts before it fires.
+    const survived = this.runCorrect
+    const best = this.runBestStreak
+    const taunt = survived >= 60 ? oneOf(OVER_GREAT)
+      : survived >= 30 ? oneOf(OVER_GOOD)
+        : survived >= 10 ? oneOf(OVER_MID)
+          : oneOf(OVER_SHORT)
+    if (this.overTimer !== null) clearTimeout(this.overTimer)
+    this.overTimer = window.setTimeout(() => {
+      this.overTimer = null
+      this.speakLine(taunt, { rate: 1.02, pitch: 0.9 })
+      this.speakLine(`${survived} commands. Best streak, ${best}.`, {
+        rate: 1.0, pitch: 0.85, queue: true,
+      })
+    }, 700)
   }
 
   /** Legacy hook kept for compatibility: a tiny hat tick. */
@@ -587,6 +770,7 @@ export class Sound {
   stop(): void {
     if (this.schedulerId !== null) { clearInterval(this.schedulerId); this.schedulerId = null }
     if (this.speakTimer !== null) { clearTimeout(this.speakTimer); this.speakTimer = null }
+    if (this.overTimer !== null) { clearTimeout(this.overTimer); this.overTimer = null }
     if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
     this.cancelPending()
     this.beatOn = false
