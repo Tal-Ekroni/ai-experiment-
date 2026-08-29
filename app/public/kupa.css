@@ -217,3 +217,14 @@ img, svg { max-width: 100%; }
 .cat-cell { display: inline-flex; align-items: center; gap: 8px; }
 .cat-cell .ic { inline-size: 26px; block-size: 26px; border-radius: 8px; font-size: .82rem; }
 td .tag { margin-inline-start: 6px; }
+
+/* ---- forecast card ---- */
+.forecast .fc-amount { direction: ltr; unicode-bidi: isolate; font-size: clamp(1.8rem, 9vw, 2.6rem);
+  font-weight: 800; letter-spacing: -.02em; line-height: 1.05; margin-block: 2px 4px; }
+.forecast.over  .fc-amount { color: var(--over); } .forecast.under .fc-amount { color: var(--under); }
+.forecast .fc-line { font-size: 1rem; color: var(--ink); margin-block-end: 12px; }
+.forecast .fc-line b { font-weight: 800; }
+.forecast .fc-track { block-size: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; margin-block-end: 8px; }
+.forecast .fc-fill { display: block; block-size: 8px; border-radius: 999px; transform-origin: inline-start; animation: growx .7s cubic-bezier(.3,.8,.3,1) both .15s; }
+.forecast.over  .fc-fill { background: linear-gradient(90deg, var(--over), color-mix(in srgb, var(--over) 75%, #fff)); }
+.forecast.under .fc-fill { background: linear-gradient(90deg, var(--under), color-mix(in srgb, var(--under) 75%, #fff)); }

@@ -45,3 +45,35 @@ export function monthOverMonth(db: DatabaseSync) {
   const prevTotal = Object.values(p).reduce((s, v) => s + v, 0);
   return { cur, prev, curMonth: cur, prevMonth: prev, curTotal, prevTotal, delta: curTotal - prevTotal, deltas };
 }
+
+/**
+ * Month-end forecast (roadmap #1): run-rate projection of the CURRENT calendar month vs a
+ * trailing baseline. A forecast that WARNS, never a budget that scolds.
+ * `now` is injectable for testing. Returns null when it cannot speak honestly:
+ *  - fewer than `minDay` days of the current month have elapsed (too noisy), or
+ *  - there is no current-month spend yet, or
+ *  - there aren't at least 2 complete prior months to form a baseline.
+ */
+export function forecast(db: DatabaseSync, now: Date = new Date(), minDay = 7) {
+  const ym = now.toISOString().slice(0, 7);
+  const dayOfMonth = now.getUTCDate();
+  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+
+  const spentSoFar = (db.prepare(`SELECT COALESCE(SUM(-amount),0) AS s FROM transactions
+    WHERE substr(booking_date,1,7) = ? AND flow_class='expense' AND status != 'superseded'`)
+    .get(ym) as { s: number }).s;
+  if (spentSoFar <= 0) return null;
+
+  // baseline: mean of up to 3 most recent COMPLETE months (strictly before the current one)
+  const prior = db.prepare(`SELECT substr(booking_date,1,7) AS m, SUM(-amount) AS total
+    FROM transactions WHERE flow_class='expense' AND status != 'superseded' AND substr(booking_date,1,7) < ?
+    GROUP BY m ORDER BY m DESC LIMIT 3`).all(ym) as unknown as { m: string; total: number }[];
+  if (prior.length < 2) return null;
+  const baseline = Math.round(prior.reduce((s, r) => s + r.total, 0) / prior.length);
+
+  const projected = Math.round(spentSoFar / dayOfMonth * daysInMonth);
+  const delta = projected - baseline;
+  const confident = dayOfMonth >= minDay;
+  return { month: ym, spentSoFar, projected, baseline, delta, dayOfMonth, daysInMonth, confident,
+           pctElapsed: Math.round(dayOfMonth / daysInMonth * 100) };
+}

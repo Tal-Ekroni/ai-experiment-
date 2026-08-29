@@ -10,7 +10,7 @@ highest-leverage win is a *channel* decision, not a feature. Spend accordingly.
 
 ## NOW — three cheap, high-impact bets (all pure arithmetic, no new deps, no AI)
 
-### 1. Month-end forecast — *the bet with the best score (5.4)*
+### 1. Month-end forecast — ✅ SHIPPED *(the bet with the best score, 5.4)*
 - **Problem:** the household only learns the month was expensive after it's over. Too late to steer.
 - **The bet:** "at this pace, **₪18,400** out this month — ₪1,500 above last." A forecast that
   *warns*, never a budget that *scolds* (scolding gets the app closed).

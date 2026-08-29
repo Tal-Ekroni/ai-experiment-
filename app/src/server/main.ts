@@ -5,7 +5,7 @@ import { openDb, getSetting, setSetting, CATEGORIES, OTHER } from '../lib/db.ts'
 import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
 import { heroBlock, monthBars, catRows, statusChips, categoryChips, catIcon } from './views.ts';
-import { retrospect, monthOverMonth } from '../lib/retrospect.ts';
+import { retrospect, monthOverMonth, forecast } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
 import { reconciliationCoverage, classifyAll } from '../lib/ledger.ts';
 import { importBuffer } from '../lib/ingest.ts';
@@ -135,7 +135,22 @@ function dashboard(): string {
     hero = h`<div class="hero"><div class="amount">${escape(fmt(retro.net, { sign: true }))}</div>
       <div class="label">נשאר לכם השנה</div><div class="sub">עדיין אין חודשיים מלאים להשוואה</div></div>`;
   }
-  return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${follow}
+  const fc = forecast(db);
+  let fcCard: Html | string = '';
+  if (fc) {
+    const over = fc.delta > 0;
+    const pct = Math.min(100, Math.round(fc.spentSoFar / Math.max(fc.projected, 1) * 100));
+    fcCard = h`<div class="card forecast ${over ? 'over' : 'under'}">
+      <div class="card-head"><h2>תחזית לסוף החודש</h2><span class="tag">${String(fc.pctElapsed)}% מהחודש</span></div>
+      <div class="fc-amount">${escape(fmt(fc.projected))}</div>
+      <div class="fc-line">${over
+        ? h`בקצב הזה, <b>${fmt(fc.delta)}</b> מעל החודש הרגיל שלכם`
+        : h`בקצב הזה, <b>${fmt(-fc.delta)}</b> מתחת לרגיל — יפה`}</div>
+      <div class="fc-track"><span class="fc-fill" style="inline-size:${String(pct)}%"></span></div>
+      <div class="sub">יצא עד כה ${fmt(fc.spentSoFar)} · הרגיל ${fmt(fc.baseline)}${fc.confident ? '' : ' · מוקדם בחודש, ההערכה עוד תתחדד'}</div>
+    </div>`;
+  }
+  return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${fcCard}${follow}
     <div class="card"><div class="card-head"><h2>12 חודשים</h2><span class="sub">הוצאה חודשית</span></div>
       ${monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense })), thisMonth)}</div>`);
 }
