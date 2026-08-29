@@ -5,7 +5,9 @@ import { openDb, getSetting, setSetting, CATEGORIES, OTHER } from '../lib/db.ts'
 import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
 import { heroBlock, monthBars, catRows, statusChips, categoryChips, catIcon } from './views.ts';
-import { retrospect, monthOverMonth, forecast } from '../lib/retrospect.ts';
+import { catMeta } from '../lib/catmeta.ts';
+const catMetaHue = (c: string) => catMeta(c).h;
+import { retrospect, monthOverMonth, forecast, yearFacts } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
 import { reconciliationCoverage, classifyAll } from '../lib/ledger.ts';
 import { importBuffer } from '../lib/ingest.ts';
@@ -153,6 +155,54 @@ function dashboard(): string {
   return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${fcCard}${follow}
     <div class="card"><div class="card-head"><h2>12 חודשים</h2><span class="sub">הוצאה חודשית</span></div>
       ${monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense })), thisMonth)}</div>`);
+}
+
+function yearScreen(): string {
+  const y = yearFacts(db);
+  if (!y) return page('הסיפור של השנה', '/year', h`<div class="empty"><h1>אין עדיין מספיק נתונים</h1></div>`);
+  const savedPositive = y.net >= 0;
+  const monthName = (m?: string) => m ? ({ '01':'ינואר','02':'פברואר','03':'מרץ','04':'אפריל','05':'מאי','06':'יוני','07':'יולי','08':'אוגוסט','09':'ספטמבר','10':'אוקטובר','11':'נובמבר','12':'דצמבר' } as any)[m.slice(5)] : '';
+  return page('הסיפור של השנה', '/year', h`
+    <div class="card year-hero">
+      <div class="yh-glow"></div>
+      <div class="yh-kicker">הסיפור של השנה שלכם</div>
+      <div class="yh-big">${escape(fmt(y.totalOut))}</div>
+      <div class="yh-sub">יצאו השנה · ${escape(String(y.txCount))} תנועות · ${escape(fmt(y.avgMonth))} בחודש בממוצע</div>
+      <div class="yh-net ${savedPositive ? 'good' : 'bad'}">${savedPositive ? 'נשארתם בפלוס של' : 'הייתם במינוס של'} <b>${escape(fmt(Math.abs(y.net)))}</b></div>
+    </div>
+
+    <div class="year-reel">
+      ${y.topCat ? h`<div class="card reel" style="--h:${String(catMetaHue(y.topCat.category))}">
+        <div class="reel-ic">${catIcon(y.topCat.category)}</div>
+        <div class="reel-k">הכי הרבה הלך על</div>
+        <div class="reel-v">${y.topCat.category}</div>
+        <div class="reel-x">${escape(fmt(y.topCat.total))}</div></div>` : ''}
+      ${y.largest ? h`<div class="card reel" style="--h:355">
+        <div class="reel-ic"><span class="ic" style="--h:355">💥</span></div>
+        <div class="reel-k">ההוצאה הכי גדולה</div>
+        <div class="reel-v">${escape(fmt(-y.largest.amount))}</div>
+        <div class="reel-x"><span class="desc">${y.largest.raw_descriptor}</span></div></div>` : ''}
+      ${y.topMerchant ? h`<div class="card reel" style="--h:200">
+        <div class="reel-ic"><span class="ic" style="--h:200">📍</span></div>
+        <div class="reel-k">הספק הכי מבוקר</div>
+        <div class="reel-v"><span class="desc">${y.topMerchant.display}</span></div>
+        <div class="reel-x">${escape(String(y.topMerchant.tx_count))} ביקורים · ${escape(fmt(y.topMerchant.volume))}</div></div>` : ''}
+      ${y.busiest ? h`<div class="card reel" style="--h:22">
+        <div class="reel-ic"><span class="ic" style="--h:22">🔥</span></div>
+        <div class="reel-k">החודש הכי יקר</div>
+        <div class="reel-v">${monthName(y.busiest.m)}</div>
+        <div class="reel-x">${escape(fmt(y.busiest.t))}</div></div>` : ''}
+      ${y.calmest ? h`<div class="card reel" style="--h:168">
+        <div class="reel-ic"><span class="ic" style="--h:168">🍃</span></div>
+        <div class="reel-k">החודש הכי רגוע</div>
+        <div class="reel-v">${monthName(y.calmest.m)}</div>
+        <div class="reel-x">${escape(fmt(y.calmest.t))}</div></div>` : ''}
+    </div>
+
+    <div class="card"><div class="card-head"><h2>לאן הלך הכסף</h2><span class="sub">השנה כולה</span></div>
+      ${catRows(y.mix)}</div>
+    <div class="card"><div class="card-head"><h2>הקצב לאורך השנה</h2></div>
+      ${monthBars(y.months.map(m => ({ m: m.m, expense: m.expense })), new Date().toISOString().slice(0,7))}</div>`);
 }
 
 function retrospectScreen(): string {
@@ -308,6 +358,7 @@ const server = createServer(async (req, res) => {
     // Authed routes
     if (path === '/' ) return send(res, 200, dashboard());
     if (path === '/retrospect') return send(res, 200, retrospectScreen());
+    if (path === '/year') return send(res, 200, yearScreen());
     if (path === '/review') return send(res, 200, reviewScreen());
     if (path === '/review/categorize' && req.method === 'POST') {
       const body = await readBody(req);

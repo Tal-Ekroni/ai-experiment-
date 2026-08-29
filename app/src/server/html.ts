@@ -29,7 +29,7 @@ export function h(strings: TemplateStringsArray, ...vals: unknown[]): Html {
 
 export function page(title: string, active: string, body: Html | string, opts: { nav?: boolean } = { nav: true }): string {
   const links: [string, string][] = [
-    ['/', 'ראשי'], ['/retrospect', 'השנה'], ['/review', 'סקירה'],
+    ['/', 'ראשי'], ['/retrospect', 'השנה'], ['/year', 'הסיפור'], ['/review', 'סקירה'],
     ['/transactions', 'תנועות'], ['/health', 'תקינות'], ['/settings', 'הגדרות'],
   ];
   return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">

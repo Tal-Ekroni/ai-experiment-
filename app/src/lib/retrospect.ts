@@ -77,3 +77,18 @@ export function forecast(db: DatabaseSync, now: Date = new Date(), minDay = 7) {
   return { month: ym, spentSoFar, projected, baseline, delta, dayOfMonth, daysInMonth, confident,
            pctElapsed: Math.round(dayOfMonth / daysInMonth * 100) };
 }
+
+/** Extra "story" facts for the Year-in-Money page. Reuses the same ledger. */
+export function yearFacts(db: DatabaseSync) {
+  const r = retrospect(db);
+  if (!r) return null;
+  const txCount = (db.prepare(`SELECT COUNT(*) c FROM transactions WHERE flow_class='expense' AND status!='superseded'`).get() as { c: number }).c;
+  const busiest = db.prepare(`SELECT substr(booking_date,1,7) m, SUM(-amount) t FROM transactions
+    WHERE flow_class='expense' AND status!='superseded' GROUP BY m ORDER BY t DESC LIMIT 1`).get() as { m: string; t: number } | undefined;
+  const calmest = db.prepare(`SELECT substr(booking_date,1,7) m, SUM(-amount) t FROM transactions
+    WHERE flow_class='expense' AND status!='superseded' GROUP BY m ORDER BY t ASC LIMIT 1`).get() as { m: string; t: number } | undefined;
+  const months = r.months.length || 1;
+  const avgMonth = Math.round(r.totalOut / months);
+  const topCat = r.mix[0];
+  return { ...r, txCount, busiest, calmest, avgMonth, topCat, monthsCount: months };
+}

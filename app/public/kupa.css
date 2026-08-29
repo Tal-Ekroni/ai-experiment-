@@ -228,3 +228,27 @@ td .tag { margin-inline-start: 6px; }
 .forecast .fc-fill { display: block; block-size: 8px; border-radius: 999px; transform-origin: inline-start; animation: growx .7s cubic-bezier(.3,.8,.3,1) both .15s; }
 .forecast.over  .fc-fill { background: linear-gradient(90deg, var(--over), color-mix(in srgb, var(--over) 75%, #fff)); }
 .forecast.under .fc-fill { background: linear-gradient(90deg, var(--under), color-mix(in srgb, var(--under) 75%, #fff)); }
+
+/* ---- Year in money (the delight page) ---- */
+.year-hero { position: relative; overflow: hidden; text-align: center; padding: calc(var(--sp)*4) 16px;
+  background: linear-gradient(160deg, var(--brand-wash), var(--surface) 65%); border: 0; box-shadow: var(--shadow-md); }
+.year-hero .yh-glow { position: absolute; inset-block-start: -140px; inset-inline: -20%; block-size: 340px;
+  background: radial-gradient(45% 60% at 50% 0%, var(--brand) 0%, transparent 70%); opacity: .22; pointer-events: none; }
+.year-hero > *:not(.yh-glow) { position: relative; z-index: 1; }
+.yh-kicker { font-size: .84rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand-ink); }
+.yh-big { direction: ltr; unicode-bidi: isolate; font-size: clamp(2.6rem, 15vw, 4.6rem); font-weight: 800;
+  letter-spacing: -.035em; line-height: 1; margin-block: 8px 6px; }
+.yh-sub { color: var(--ink-2); font-size: .92rem; }
+.yh-net { margin-block-start: 16px; display: inline-block; padding: 8px 18px; border-radius: 999px; font-weight: 600; }
+.yh-net b { direction: ltr; unicode-bidi: isolate; font-weight: 800; }
+.yh-net.good { background: var(--brand-wash); color: var(--brand-ink); }
+.yh-net.bad  { background: color-mix(in srgb, var(--over) 15%, transparent); color: var(--over); }
+.year-reel { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-block: 14px; }
+.year-reel .reel { margin: 0; padding: 16px; display: flex; flex-direction: column; gap: 4px;
+  border-inline-start: 3px solid hsl(var(--h,168) 60% 55%); }
+.reel-ic { margin-block-end: 4px; } .reel-ic .ic { inline-size: 38px; block-size: 38px; border-radius: 12px; font-size: 1.15rem; }
+.reel-k { font-size: .8rem; color: var(--muted); font-weight: 600; }
+.reel-v { font-size: 1.15rem; font-weight: 800; letter-spacing: -.01em; }
+.reel-x { direction: ltr; unicode-bidi: isolate; font-size: .82rem; color: var(--ink-2); font-weight: 600; text-align: start; }
+.year-reel .reel:first-child { grid-column: 1 / -1; }
+.year-reel .reel:first-child .reel-v { font-size: 1.5rem; }

@@ -32,7 +32,7 @@ highest-leverage win is a *channel* decision, not a feature. Spend accordingly.
   design + email fallback is the insurance.
 - **First slice:** a `Channel` interface with an email impl first (zero risk), then the WhatsApp bridge.
 
-### 3. "Your year in money" — *the delight-per-effort steal*
+### 3. "Your year in money" — ✅ SHIPPED *(the delight-per-effort steal)*
 - **Problem:** a year of data is a story the household never gets told.
 - **The bet:** one designed, screenshot-worthy annual summary — total in/out, the shape of the year,
   biggest splurge, most-visited merchant, the category that grew most. Shareable → free word-of-mouth.
