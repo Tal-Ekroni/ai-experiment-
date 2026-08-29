@@ -123,3 +123,48 @@ path, both broken reconciliation checks, the false-drift-in-month-two problem, t
 one-sided digest, the zone-wide ACME token, the missing bot allowlist, the decayed health alerts,
 and red/green as a sole distinction. Those are in `rounds/06-score.md` under *What the gauntlet
 actually caught*, with the round and seat that found each one.
+
+---
+
+# Post-build addendum (stages 3–6)
+
+The build turned three spec-level risks into concrete, and added two born from real code.
+
+## 8. Rules-only mode makes everything `אחר` until merchants are confirmed — medium
+
+**Owner:** the household, first session · **Discovered:** stage 5 render
+
+Without `ANTHROPIC_API_KEY` and before the 20-merchant confirmation, every expense inherits the
+`אחר` default, so "where the money went" is one grey bar and explained/attributed both read 0%. This
+is *honest* (the app admits it can't categorize yet) but visually thin. The 20-merchant onboarding
+is what fixes it, and a scripted import that skips onboarding shows the floor. **Close it** by
+always walking a real user through the confirm-20 screen, or by setting the LLM key.
+
+## 9. `node:sqlite` is behind an experimental flag — low
+
+**Owner:** whoever pins the runtime
+
+The whole storage layer rides Node 22's built-in SQLite, which still prints an ExperimentalWarning
+and could change across a major Node bump. Mitigated by pinning Node in the Docker image
+(`node:22.22-slim`). **Close it** when `node:sqlite` stabilizes, or accept the pin.
+
+## 10. The reconciliation *method* is built but not yet wired to a live balance feed — high
+
+**Owner:** setup stage 2 (scrapers)
+
+`reconciliationCoverage` reports honestly that `import` accounts are unreconcilable — which is
+correct and is what stage 1 uses. But the actual windowed value-date check (§3.6) needs
+`balance_snapshots`, which only the scraper path produces. So today the app is honest about having
+*no* reconciliation on an import-only setup, and the reconciliation engine itself is unexercised
+until scrapers land. **Close it** by building the scraper worker (deferred, setup stage 2).
+
+## What stages 3–6 proved
+
+- The ledger arithmetic is exact on real data (hand-verified).
+- Every security boundary in the spec holds against live attack.
+- The two-state, RTL, validated-palette craft survives rendering in both themes.
+- One class of bug — the HTML-escaping leak — was invisible to tests and obvious on screen, which
+  is the argument for stage 5 existing at all.
+
+None of these change the top-three risks from the spec phase. Risk #1 (does the second user ever
+open it) remains the one that decides whether any of this mattered.

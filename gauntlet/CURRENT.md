@@ -1,37 +1,30 @@
 # Gauntlet — current state
 
-**Stage:** 2 — Spec gauntlet · **COMPLETE**
-**Round:** 6 of 6
-**Floor:** 9.0 **Mean:** 9.6 **Bar:** **PASS** — second consecutive clean pass
+**Stages 1–6: COMPLETE.** The loop is finished.
 
-## Status
+| Stage | Outcome |
+|---|---|
+| 1 Interrogation | 8 answers, rubric frozen |
+| 2 Spec gauntlet | Converged round 6 — floor 9.0, mean 9.6 |
+| 3 Architecture gauntlet | Converged round 2 — one process, node:sqlite, ~0 runtime deps |
+| 4 Build | Kupa built, 14 tests green, 2 defects caught by slice gauntlets |
+| 5 Red-team (running code) | 7 attack classes repelled, arithmetic exact, 1 render bug caught+fixed |
+| 6 Ship gate | This. |
 
-### CONVERGED at round 6.
+## What shipped
 
-Progression: 4.2 → 6.5 → 7.6 → 8.7 → 9.2 → **9.6**. Rubric frozen at stage 1 and never modified.
+`app/` — a running one-process Node 22 household-CFO web app (Kupa): Hebrew/RTL, integer-agorot
+ledger with settlement/transfer matching that refuses to guess, hostile-input parsers for real
+Israeli bank exports, 20-merchant onboarding, twelve-month retrospect, delta-hero dashboard on a
+CVD-validated palette, 12-item weekly review, self-check + two-sided digest, and an allowlisted
+read-only Answerer. `npm start` or `docker compose up`.
 
-Round 6 was the confirmation round: five bounded fixes, no new scope. The panel returned **seven
-findings, zero blocking** — every remaining concern is either an empirical assumption only shipping
-can test, an inherent risk correctly disclosed, or work belonging to a later stage. All seven are in
-`OPEN-RISKS.md`.
+## Open risks
 
-Final artifact: **`rounds/06-artifact.md`**.
+`gauntlet/OPEN-RISKS.md` — 10 recorded, none fatal. The deciding one is unchanged from stage 2:
+whether the second user ever opens it. Ship stage 1 and watch.
 
-## What exists
+## Next action
 
-A specification, rewritten in full six times against a seven-seat hostile panel. **No application
-code has been written.**
-
-## Next action — awaiting the user
-
-Stage 2 of 6 is done. Remaining stages, in order:
-
-- **Stage 3** — Architecture gauntlet (schema, process boundaries, failure modes). Rounds, same loop.
-- **Stage 4** — Build, vertical slices, each with its own mini-gauntlet. Hours of work, not minutes.
-- **Stage 5** — Red-team gauntlet against *running code*: actually run it, actually attempt the
-  descriptor injection, actually check a month's arithmetic against a hand-computed total.
-- **Stage 6** — Ship gate.
-
-The natural first build target is **stage 1 of §2**: one file import, twenty merchant confirmations,
-the twelve-month retrospect. It is the smallest thing that is genuinely useful and it tests risk #1
-and risk #2 for the price of an evening.
+None required — the loop is closed. Natural follow-ons if wanted: the scraper worker (setup
+stage 2, unlocks live reconciliation), or a real first-run with the household's own file.
