@@ -1,20 +1,16 @@
 # Gauntlet — current state
 
-**Stage:** 1 — Interrogation
-**Round:** —
-**Floor:** — **Mean:** — **Bar:** not yet frozen
+**Stage:** 2 — Spec gauntlet
+**Round:** 1 complete
+**Floor:** 3.0 **Mean:** 4.2 **Bar:** FAIL (need floor ≥ 8.0, mean ≥ 9.0)
 
 ## Status
 
-Blocked on the user. Eight architecture-deciding questions have been put to them.
-No spec may be written until they are answered — Stage 1 is a hard gate.
+Round 1 spec drafted and put through the seven-seat panel. Two structural defects dominate:
+the ledger is arithmetically wrong (Israeli card settlement double-counts), and the app has no
+path to its second user. Mandate written.
 
 ## Next action
 
-Receive answers → freeze `gauntlet/RUBRIC.md` → begin Stage 2 round 1.
-
-## Notes
-
-Two phrases in the seed are traps and must be converted before round 1:
-- "AAA+ grade" → becomes the frozen rubric
-- "AI agents for various jobs" → each agent must justify its seat or be cut
+Execute round 2 against `rounds/01-mandate.md`. Full rewrite of the artifact, not a diff.
+Craft and agent-cost findings are deliberately out of scope this round.
