@@ -6,7 +6,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { monthTotals } from './ledger.ts';
 
 export type Kind = 'asset' | 'liability';
-export interface WealthItem { id: number; name: string; kind: Kind; category: string; balance: number; updated_at: string }
+export interface WealthItem { id: number; name: string; kind: Kind; category: string; balance: number; updated_at: string; apr: number | null; term_months: number | null }
 
 /** Israeli-aware categories with an icon + hue for each. */
 export const ASSET_CATS: Record<string, { label: string; icon: string; h: number }> = {
@@ -34,14 +34,15 @@ export function listItems(db: DatabaseSync, kind: Kind): WealthItem[] {
   return db.prepare(`SELECT * FROM wealth_items WHERE kind = ? ORDER BY sort, id`).all(kind) as unknown as WealthItem[];
 }
 
-export function upsertItem(db: DatabaseSync, item: { id?: number; name: string; kind: Kind; category: string; balance: number }) {
+export function upsertItem(db: DatabaseSync, item: { id?: number; name: string; kind: Kind; category: string; balance: number; apr?: number | null; term_months?: number | null }) {
   let id = item.id;
+  const apr = item.apr ?? null, term = item.term_months ?? null;
   if (id) {
-    db.prepare(`UPDATE wealth_items SET name=?, category=?, balance=?, updated_at=datetime('now') WHERE id=?`)
-      .run(item.name, item.category, item.balance, id);
+    db.prepare(`UPDATE wealth_items SET name=?, category=?, balance=?, apr=?, term_months=?, updated_at=datetime('now') WHERE id=?`)
+      .run(item.name, item.category, item.balance, apr, term, id);
   } else {
-    id = Number(db.prepare(`INSERT INTO wealth_items(name, kind, category, balance) VALUES(?,?,?,?)`)
-      .run(item.name, item.kind, item.category, item.balance).lastInsertRowid);
+    id = Number(db.prepare(`INSERT INTO wealth_items(name, kind, category, balance, apr, term_months) VALUES(?,?,?,?,?,?)`)
+      .run(item.name, item.kind, item.category, item.balance, apr, term).lastInsertRowid);
   }
   // record this month's value in history (upsert)
   db.prepare(`INSERT INTO wealth_history(item_id, month, balance) VALUES(?,?,?)
@@ -89,4 +90,8 @@ export function freeCashFlow(db: DatabaseSync, n = 6) {
     const t = monthTotals(db, m);
     return { month: m, income: t.income, expense: t.expense, net: t.income - t.expense, partial: m === thisMonth };
   }).reverse();
+}
+
+export function getItem(db: DatabaseSync, id: number): WealthItem | undefined {
+  return db.prepare(`SELECT * FROM wealth_items WHERE id=?`).get(id) as unknown as WealthItem | undefined;
 }

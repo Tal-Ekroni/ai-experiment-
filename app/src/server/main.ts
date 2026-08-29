@@ -6,7 +6,8 @@ import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
 import { heroBlock, monthBars, catRows, coicopRows, statusChips, categoryChips, catIcon } from './views.ts';
 import { catMeta } from '../lib/catmeta.ts';
-import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
+import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, getItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
+import { amortize, sampleBalance } from '../lib/loan.ts';
 const catMetaHue = (c: string) => catMeta(c).h;
 import { retrospect, monthOverMonth, forecast, yearFacts } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
@@ -270,6 +271,38 @@ function transactionsScreen(qstr: string | null): string {
     </tbody></table></div>`);
 }
 
+function loanScreen(idStr: string | null): string {
+  const it = idStr ? getItem(db, Number(idStr)) : undefined;
+  if (!it || it.kind !== 'liability' || !it.apr) return page('לוח סילוקין', '/wealth', h`<div class="empty"><h1>אין נתוני הלוואה</h1><p><a href="/wealth">חזרה ←</a></p></div>`);
+  const a = amortize({ balance: it.balance, aprPct: it.apr, termMonths: it.term_months ?? undefined });
+  if (a.neverPays) return page('לוח סילוקין', '/wealth', h`<div class="card"><h1>${it.name}</h1>
+    <p style="color:var(--over)">בקצב התשלום הנוכחי ההלוואה לא נסגרת — התשלום החודשי נמוך מהריבית.</p><a href="/wealth">חזרה ←</a></div>`);
+  const years = Math.floor(a.months / 12), mo = a.months % 12;
+  const payoff = new Date(); payoff.setMonth(payoff.getMonth() + a.months);
+  const curve = sampleBalance(a, 28);
+  const maxB = curve[0].balance || 1;
+  const totalP = it.balance, totalI = a.totalInterest;
+  const ipct = Math.round(totalI / (totalP + totalI) * 100);
+  return page('לוח סילוקין · ' + it.name, '/wealth', h`
+    <div class="card hero-card"><div class="hero over">
+      <div class="cap">${it.name} · יתרה</div>
+      <div class="amount">${escape(fmt(it.balance))}</div>
+      <div class="label">${it.apr}% ריבית · תשלום ${escape(fmt(a.payment))} לחודש</div>
+      <div class="note">צפי סילוק: עוד ${years} שנים${mo? ' ו-'+mo+' חודשים':''} · ${payoff.toISOString().slice(0,7)}</div>
+    </div></div>
+    <div class="card"><div class="card-head"><h2>סך הריבית שתשלמו</h2><span class="tag">${ipct}% מהתשלום</span></div>
+      <div class="big" style="color:var(--over)">${escape(fmt(totalI))}</div>
+      <div class="sub">קרן ${fmt(totalP)} + ריבית ${fmt(totalI)} = ${fmt(a.totalPaid)} בסך הכל</div>
+      <div class="ptrack"><span class="pp" style="inline-size:${100-ipct}%"></span><span class="pi" style="inline-size:${ipct}%"></span></div>
+      <div class="plegend"><span><i class="dp"></i> קרן</span><span><i class="di"></i> ריבית</span></div>
+    </div>
+    <div class="card"><div class="card-head"><h2>יתרת החוב לאורך זמן</h2></div>
+      <div class="bars payoff">${raw(curve.map((c,i)=>`<div class="b" style="height:${Math.max(3,Math.round(c.balance/maxB*100))}%;--bi:${i}" data-v="${escape(fmt(c.balance))}"></div>`).join(''))}</div>
+      <div class="sub">מהיום ועד הסילוק המלא</div></div>
+    <p class="footnote">חישוב ריבית קבועה, מסלול יחיד. משכנתא ישראלית מורכבת ממספר מסלולים (פריים / קבועה / צמודת מדד) — זו הערכה שימושית, לא מדויקת לשקל כמו לוח הסילוקין של הבנק.</p>
+    <p><a href="/wealth">← חזרה להון</a></p>`);
+}
+
 function wealthScreen(): string {
   const nw = netWorth(db);
   const assets = listItems(db, 'asset');
@@ -289,14 +322,17 @@ function wealthScreen(): string {
         value="${(Math.round(it.balance/100)).toLocaleString('en-US')}" aria-label="יתרה"></span>
       <button class="wl-save" title="שמירה">✓</button>
       <button class="wl-del" formaction="/wealth/delete" title="מחיקה">🗑</button>
+      ${it.kind === 'liability' && it.apr ? h`<a class="wl-loan" href="/wealth/loan?id=${String(it.id)}">📊 לוח סילוקין</a>` : ''}
     </form>`;
   };
   const addForm = (kind: string, cats: Record<string, any>) => h`
     <form method="post" action="/wealth/save" class="wl-add">
       <input type="hidden" name="kind" value="${kind}">
       <select name="category">${raw(Object.entries(cats).map(([k,v]:any) => `<option value="${k}">${escape(v.icon)} ${escape(v.label)}</option>`).join(''))}</select>
-      <input type="text" name="name" placeholder="שם (למשל: מיטב דש)" required>
-      <span class="wl-edit"><span class="cur">₪</span><input type="text" inputmode="numeric" name="balance" placeholder="0" required></span>
+      <input type="text" name="name" placeholder="שם${kind==='liability'?' (למשל: משכנתא)':' (למשל: מיטב דש)'}" required>
+      <span class="wl-edit"><span class="cur">₪</span><input type="text" inputmode="numeric" name="balance" placeholder="יתרה" required></span>
+      ${kind==='liability' ? h`<input class="wl-small" type="text" inputmode="decimal" name="apr" placeholder="ריבית %">
+      <input class="wl-small" type="text" inputmode="numeric" name="years" placeholder="שנים">` : ''}
       <button class="primary">הוספה</button>
     </form>`;
 
@@ -421,6 +457,7 @@ const server = createServer(async (req, res) => {
     if (path === '/retrospect') return send(res, 200, retrospectScreen());
     if (path === '/year') return send(res, 200, yearScreen());
     if (path === '/wealth') return send(res, 200, wealthScreen());
+    if (path === '/wealth/loan') return send(res, 200, loanScreen(url.searchParams.get('id')));
     if (path === '/wealth/save' && req.method === 'POST') {
       const b = await readBody(req);
       const kind = b.get('kind') === 'liability' ? 'liability' : 'asset';
@@ -428,7 +465,9 @@ const server = createServer(async (req, res) => {
       const name = (b.get('name') ?? '').trim() || 'ללא שם';
       const cats = kind === 'asset' ? ASSET_CATS : LIAB_CATS;
       const category = (b.get('category') && b.get('category')! in cats) ? b.get('category')! : Object.keys(cats)[0];
-      upsertItem(db, { id: b.get('id') ? Number(b.get('id')) : undefined, name, kind, category, balance });
+      const apr = b.get('apr') ? Math.max(0, Number(b.get('apr'))) || null : null;
+      const years = b.get('years') ? Math.round(Number(b.get('years')) * 12) || null : null;
+      upsertItem(db, { id: b.get('id') ? Number(b.get('id')) : undefined, name, kind, category, balance, apr, term_months: years });
       return redirect(res, '/wealth');
     }
     if (path === '/wealth/delete' && req.method === 'POST') {

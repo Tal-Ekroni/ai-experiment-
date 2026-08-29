@@ -288,3 +288,14 @@ td .tag { margin-inline-start: 6px; }
 .cg-lname { flex: 1; font-size: .92rem; }
 .cg-lcode { font-variant-numeric: tabular-nums; font-size: .74rem; color: var(--muted); direction: ltr; }
 .cg-lval { font-variant-numeric: tabular-nums; font-size: .88rem; font-weight: 600; direction: ltr; unicode-bidi: isolate; min-inline-size: 76px; text-align: end; }
+
+/* ---- loan / amortization ---- */
+.wl-loan { flex-basis: 100%; font-size: .85rem; margin-block-start: 2px; }
+.wl-small { inline-size: 90px; flex: 0 0 auto; }
+.ptrack { display: flex; block-size: 12px; border-radius: 999px; overflow: hidden; margin-block: 12px 8px; }
+.ptrack .pp { background: var(--under); } .ptrack .pi { background: var(--over); }
+.plegend { display: flex; gap: 16px; font-size: .84rem; color: var(--ink-2); }
+.plegend i { display: inline-block; inline-size: 10px; block-size: 10px; border-radius: 3px; margin-inline-end: 5px; }
+.plegend .dp { background: var(--under); } .plegend .di { background: var(--over); }
+.hero.over .amount { color: var(--over); }
+.bars.payoff { direction: ltr; }

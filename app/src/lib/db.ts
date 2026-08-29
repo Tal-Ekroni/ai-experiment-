@@ -118,7 +118,9 @@ export function openDb(path: string): DatabaseSync {
       category TEXT NOT NULL,
       balance INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      sort INTEGER NOT NULL DEFAULT 0
+      sort INTEGER NOT NULL DEFAULT 0,
+      apr REAL,
+      term_months INTEGER
     );
     CREATE TABLE IF NOT EXISTS wealth_history (
       item_id INTEGER NOT NULL REFERENCES wealth_items(id) ON DELETE CASCADE,
@@ -131,6 +133,10 @@ export function openDb(path: string): DatabaseSync {
       value TEXT NOT NULL
     );
   `);
+  // migrate older wealth_items that predate loan fields
+  for (const col of ['apr REAL', 'term_months INTEGER']) {
+    try { db.exec(`ALTER TABLE wealth_items ADD COLUMN ${col}`); } catch { /* already there */ }
+  }
   return db;
 }
 
