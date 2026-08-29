@@ -8,6 +8,7 @@ import { heroBlock, monthBars, catRows, coicopRows, statusChips, categoryChips, 
 import { catMeta } from '../lib/catmeta.ts';
 import { netWorth, netWorthHistory, freeCashFlow, listItems, upsertItem, deleteItem, getItem, catMetaFor, ASSET_CATS, LIAB_CATS } from '../lib/wealth.ts';
 import { amortize, sampleBalance } from '../lib/loan.ts';
+import { detectRecurring, recurringTotal } from '../lib/recurring.ts';
 const catMetaHue = (c: string) => catMeta(c).h;
 import { retrospect, monthOverMonth, forecast, yearFacts } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
@@ -154,7 +155,11 @@ function dashboard(): string {
       <div class="sub">יצא עד כה ${fmt(fc.spentSoFar)} · הרגיל ${fmt(fc.baseline)}${fc.confident ? '' : ' · מוקדם בחודש, ההערכה עוד תתחדד'}</div>
     </div>`;
   }
-  return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${fcCard}${follow}
+  const rec = recurringTotal(detectRecurring(db));
+  const recCard = rec.count >= 3 ? h`<a class="card teaser" href="/recurring">
+    <div class="tz-l"><div class="tz-k">מנויים והוצאות קבועות</div><div class="tz-v">${escape(fmt(rec.monthly))} <span class="sub">לחודש</span></div></div>
+    <div class="tz-r">${String(rec.count)} חיובים ←</div></a>` : '';
+  return page('ראשי', '/', h`<div class="card hero-card">${hero}<div class="pill-row">${chips}</div></div>${fcCard}${recCard}${follow}
     <div class="card"><div class="card-head"><h2>12 חודשים</h2><span class="sub">הוצאה חודשית</span></div>
       ${monthBars(retro.months.map(r => ({ m: r.m, expense: r.expense })), thisMonth)}</div>`);
 }
@@ -365,6 +370,30 @@ function wealthScreen(): string {
     <p class="footnote">הנתונים נשמרים אצלכם בלבד. עדכנו יתרות פעם בחודש — קרן השתלמות ופנסיה אין דרך לסנכרן אוטומטית מבלי להוציא מידע מהבית.</p>`);
 }
 
+function recurringScreen(): string {
+  const list = detectRecurring(db);
+  const t = recurringTotal(list);
+  const cadName: Record<string,string> = { weekly:'שבועי', monthly:'חודשי', quarterly:'רבעוני', yearly:'שנתי' };
+  if (list.length === 0) return page('מנויים', '/recurring', h`<div class="empty"><h1>לא זוהו חיובים קבועים</h1>
+    <p class="sub">צריך כמה חודשים של נתונים כדי לזהות מנויים והוראות קבע.</p></div>`);
+  return page('מנויים והוצאות קבועות', '/recurring', h`
+    <div class="card hero-card"><div class="hero over">
+      <div class="cap">מחויב כל חודש</div>
+      <div class="amount">${escape(fmt(t.monthly))}</div>
+      <div class="label">${String(t.count)} חיובים קבועים</div>
+      <div class="note">זה מה שיוצא עוד לפני שהחלטתם משהו</div>
+    </div></div>
+    <div class="card"><div class="card-head"><h2>החיובים</h2><span class="sub">לפי עלות חודשית</span></div>
+      ${list.map(r => h`<div class="rc">
+        ${catIcon(r.category)}
+        <span class="rc-main"><b>${r.merchant}</b>${r.rose ? h` <span class="tag" style="background:color-mix(in srgb,var(--over) 16%,transparent);color:var(--over)">עלה ⬆</span>` : ''}<br>
+          <span class="sub">${cadName[r.cadence]} · ${fmt(r.avgAmount)} · צפוי ${r.nextDate}</span></span>
+        <span class="rc-mo"><b>${escape(fmt(r.monthly))}</b><br><span class="sub">לחודש</span></span>
+      </div>`)}
+    </div>
+    <p class="footnote">זיהוי לפי קצב וסכום יציב — הערכה, לא אמת מוחלטת. קופה לא מבטלת ולא משנה כלום; רק מראה.</p>`);
+}
+
 function healthScreen(): string {
   const checks = runSelfCheck(db, DB_PATH);
   const jobs = db.prepare(`SELECT job, MAX(started_at) AS last, ok FROM job_runs GROUP BY job ORDER BY job`).all() as any[];
@@ -458,6 +487,7 @@ const server = createServer(async (req, res) => {
     if (path === '/year') return send(res, 200, yearScreen());
     if (path === '/wealth') return send(res, 200, wealthScreen());
     if (path === '/wealth/loan') return send(res, 200, loanScreen(url.searchParams.get('id')));
+    if (path === '/recurring') return send(res, 200, recurringScreen());
     if (path === '/wealth/save' && req.method === 'POST') {
       const b = await readBody(req);
       const kind = b.get('kind') === 'liability' ? 'liability' : 'asset';

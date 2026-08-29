@@ -299,3 +299,17 @@ td .tag { margin-inline-start: 6px; }
 .plegend .dp { background: var(--under); } .plegend .di { background: var(--over); }
 .hero.over .amount { color: var(--over); }
 .bars.payoff { direction: ltr; }
+
+/* ---- recurring ---- */
+.rc { display: flex; align-items: center; gap: 12px; padding-block: 11px; border-block-end: 1px solid var(--line); }
+.rc:last-child { border-block-end: 0; }
+.rc-main { flex: 1; line-height: 1.3; } .rc-main b { font-weight: 700; }
+.rc-mo { text-align: end; direction: ltr; unicode-bidi: isolate; flex: none; min-inline-size: 80px; }
+.rc-mo b { font-weight: 800; font-variant-numeric: tabular-nums; }
+a.teaser { display: flex; align-items: center; justify-content: space-between; text-decoration: none;
+  background: linear-gradient(100deg, var(--brand-wash), var(--surface)); }
+a.teaser:hover { text-decoration: none; box-shadow: var(--shadow-md); }
+.teaser .tz-k { font-size: .82rem; color: var(--ink-2); font-weight: 600; }
+.teaser .tz-v { font-size: 1.5rem; font-weight: 800; direction: ltr; unicode-bidi: isolate; color: var(--ink); }
+.teaser .tz-v .sub { font-size: .9rem; font-weight: 600; }
+.teaser .tz-r { color: var(--brand-ink); font-weight: 700; white-space: nowrap; }
