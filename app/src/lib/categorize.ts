@@ -5,6 +5,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 import { CATEGORIES, OTHER, type Category } from './db.ts';
+import { classifyMerchant } from './merchants.ts';
 
 /** Strip numbers, branch suffixes and bidi noise so 'שופרסל דיל רמת גן 123' groups. */
 export function normalizeMerchant(desc: string): string {
@@ -61,9 +62,19 @@ export async function categorizeAll(db: DatabaseSync, llm: Categorizer | null): 
     { id: number; amount: number; merchant_id: number; default_category: string; confirmed: number }[];
   const bandStmt = db.prepare(`SELECT category FROM rules
     WHERE merchant_id = ? AND (min_amount IS NULL OR ? >= min_amount) AND (max_amount IS NULL OR ? <= max_amount) LIMIT 1`);
+  const descOf = db.prepare(`SELECT raw_descriptor FROM transactions WHERE id = ?`);
   for (const t of txs) {
     const band = bandStmt.get(t.merchant_id, Math.abs(t.amount), Math.abs(t.amount)) as { category: string } | undefined;
-    const cat = band?.category ?? t.default_category;
+    let cat = band?.category ?? t.default_category;
+    // bundled offline dictionary: rescue merchants the bank left uncategorized
+    if (cat === OTHER) {
+      const d = descOf.get(t.id) as { raw_descriptor: string } | undefined;
+      const guess = d ? classifyMerchant(d.raw_descriptor) : null;
+      if (guess) {
+        cat = guess;
+        db.prepare(`UPDATE merchants SET default_category = ? WHERE id = ? AND confirmed = 0`).run(guess, t.merchant_id);
+      }
+    }
     db.prepare(`UPDATE transactions SET category = ?, category_confirmed = ? WHERE id = ?`)
       .run(cat, band ? 1 : 0, t.id);
   }
