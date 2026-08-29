@@ -1,48 +1,92 @@
 /** OWNER: art agent. DOM + CSS + canvas, zero external assets — no font files,
- *  no images, no fetches. Every state change animates with intent, visual
- *  energy escalates with intensity(), and the command stays readable in a
- *  fraction of a second by a panicking player. Renderer surface kept intact:
- *  constructor(root) + sync(state). All change-detection happens inside sync()
- *  by diffing the previous frame's state, so the engine contract is untouched. */
+ *  no images, no fetches. Every state change animates with intent, and the
+ *  command stays readable in a fraction of a second by a panicking player.
+ *  Renderer surface kept intact: constructor(root) + sync(state). All
+ *  change-detection happens inside sync() by diffing the previous frame's
+ *  state, so the engine contract is untouched.
+ *
+ *  VISUAL ENERGY IS RE-ANCHORED: intensity() reaches full boil at command 116,
+ *  but the median player dies near 65 and the casual near 32 — so the renderer
+ *  drives its energy from energyOf(), which crosses a full arc inside the
+ *  first ~45 commands (ambient density, ring weight, background heat, halo
+ *  speed) while intensity() still carries the late-game hue climb. The screen
+ *  is alive from command one: a drifting mote field, a breathing aurora, two
+ *  slow halo sweeps and ring satellites all exist at t=0 and thicken visibly
+ *  by t=30.
+ *
+ *  COMMAND FAMILIES read differently before the words are parsed:
+ *   - touch  (tap/swipes/hold/pinch): cool accents; swipes slide IN the
+ *     commanded direction, taps pop from center.
+ *   - motion (twist/shake/flip): warm accents, the screen edges glow warm
+ *     ("use the phone itself"), and the label enters the way the phone must
+ *     move — twist rotates in, shake jitters in, flip somersaults in.
+ *   - inhibit (DO NOTHING): the world HOLDS ITS BREATH — cold blue, halos
+ *     pause, motes and embers hang frozen mid-air, the ring is a static
+ *     dashed circle. Stillness itself is the signal.
+ *
+ *  PERFORMANCE: all particles come from fixed preallocated pools (swap-kill,
+ *  zero allocation per frame); DOM text/style writes are cached and only
+ *  touched on change; ambient chrome is CSS-composited (transform/opacity). */
 import { GameState } from './types'
 import { intensity } from './commands'
 
-/** Per-action accent hue + oversized backdrop glyph. The glyph sits BEHIND the
- *  text at low opacity — a pre-attentive directional cue (arrows for swipes)
- *  that never competes with the label. Glyphs are plain unicode present in
- *  every system font. Inhibition gets no glyph: its cue is the whole screen
- *  flipping cold blue, which reads faster than any icon. */
-const ART: Record<string, { hue: number; glyph: string }> = {
-  'tap':         { hue: 145, glyph: '' },   // the default verb needs no icon — keep the screen clean
-  'swipe-up':    { hue: 200, glyph: '▲' },
-  'swipe-down':  { hue: 215, glyph: '▼' },
-  'swipe-left':  { hue: 188, glyph: '◀' },
-  'swipe-right': { hue: 188, glyph: '▶' },
-  'twist':       { hue: 45,  glyph: '↻' },
-  'shake':       { hue: 25,  glyph: '≈' },
-  'hold':        { hue: 275, glyph: '◉' },
-  'release':     { hue: 275, glyph: '○' },
-  'pinch':       { hue: 320, glyph: '›‹' },
-  'flip':        { hue: 10,  glyph: '⇅' },
-  'none':        { hue: 205, glyph: '' },
+type Family = 'touch' | 'motion' | 'inhibit'
+
+/** Per-action accent hue + oversized backdrop glyph + family. The glyph sits
+ *  BEHIND the text at low opacity — a pre-attentive directional cue (arrows
+ *  for swipes) that never competes with the label. Glyphs are plain unicode
+ *  present in every system font. */
+const ART: Record<string, { hue: number; glyph: string; fam: Family }> = {
+  'tap':         { hue: 145, glyph: '',  fam: 'touch' },   // the default verb needs no icon
+  'swipe-up':    { hue: 200, glyph: '▲', fam: 'touch' },
+  'swipe-down':  { hue: 215, glyph: '▼', fam: 'touch' },
+  'swipe-left':  { hue: 188, glyph: '◀', fam: 'touch' },
+  'swipe-right': { hue: 188, glyph: '▶', fam: 'touch' },
+  'twist':       { hue: 45,  glyph: '↻', fam: 'motion' },
+  'shake':       { hue: 25,  glyph: '≈', fam: 'motion' },
+  'hold':        { hue: 275, glyph: '◉', fam: 'touch' },
+  'release':     { hue: 275, glyph: '○', fam: 'touch' },
+  'pinch':       { hue: 320, glyph: '›‹', fam: 'touch' },
+  'flip':        { hue: 10,  glyph: '⇅', fam: 'motion' },
+  'none':        { hue: 205, glyph: '✕', fam: 'inhibit' },
 }
 
 const INHIBIT_COLOR = '#66ccff'
+const TAU = Math.PI * 2
+const MAX_POOL = 150    // sparks + embers, preallocated
+const MAX_MOTES = 34    // always-on ambient field, preallocated
+
+/** Visual energy 0..1. Re-anchored so a 30-command run sees a real arc:
+ *  ~0.05 at command 1, ~0.2 at 6, ~0.35 at 12, ~0.7 at 30, saturating near 45.
+ *  Never below intensity(), so the late game keeps everything it had. */
+const energyOf = (issued: number, i: number): number =>
+  Math.max(i, Math.min(1, Math.pow(Math.max(0, issued) / 45, 0.8)))
+
+/** Background heat hue: night-blue → violet → red. Early motion comes from
+ *  energy, the late-game climb into red from intensity. */
+const heatHue = (e: number, i: number): number => 228 + e * 48 + i * 64
 
 interface Particle {
   x: number; y: number; vx: number; vy: number
   life: number; max: number; size: number; hue: number
   kind: 'spark' | 'ember'
 }
+interface Mote { x: number; y: number; vx: number; vy: number; ph: number; size: number }
 
-const reducedMotion = (): boolean =>
-  typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+/** Cached MediaQueryList — reading .matches is free, re-creating it per frame
+ *  is not, and it stays live (updates if the OS setting changes mid-session). */
+const rmQuery: MediaQueryList | null =
+  typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null
+const reducedMotion = (): boolean => !!rmQuery && rmQuery.matches
 
 export class Renderer {
   private root: HTMLElement
   private shaker = document.createElement('div')     // whole-screen punch target
+  private aurora = document.createElement('div')     // breathing radial glow (CSS-animated)
+  private halo = document.createElement('div')       // slow conic sweep, clockwise
+  private halo2 = document.createElement('div')      // slower counter-rotating sweep
   private fx = document.createElement('canvas')      // full-screen particles
-  private ring = document.createElement('canvas')    // timer ring
+  private ring = document.createElement('canvas')    // timer ring + orbiters
   private glyph = document.createElement('div')      // faded action icon behind text
   private kicker = document.createElement('div')     // "JOLT" title on idle/over
   private label = document.createElement('div')      // THE command — always center
@@ -53,6 +97,8 @@ export class Renderer {
   private livesEl = document.createElement('div')
   private flash = document.createElement('div')
   private vignette = document.createElement('div')
+  private edgeL = document.createElement('div')      // warm side-glow: "motion command"
+  private edgeR = document.createElement('div')
   private ctx: CanvasRenderingContext2D
   private fxCtx: CanvasRenderingContext2D
 
@@ -61,10 +107,29 @@ export class Renderer {
   private pScore = 0
   private pPhase = ''
   private pInhibit = false
-  private particles: Particle[] = []
-  private emberCarry = 0
   private pRuntime = 0
+  private phaseChangedAt = 0
+  private freezeT = 0            // runtime at which the inhibit freeze began
+  private wasFrozen = false
   private idleAnim: Animation | null = null
+
+  // DOM write caches — touch the DOM only when a value actually changes
+  private bgCache = ''
+  private ambientCache = ''
+  private ambientPlay = ''
+  private edgeCache = ''
+  private cLabel = ''
+  private cLabelColor = ''
+  private cSub = ''
+  private cGlyph = ''
+  private cScore = ''
+  private cCombo = ''
+
+  // fixed particle pools — zero allocation per frame
+  private pool: Particle[] = []
+  private alive = 0              // pool[0..alive) are live, swap-kill keeps it packed
+  private motes: Mote[] = []
+  private emberCarry = 0
 
   constructor(root: HTMLElement) {
     this.root = root
@@ -75,6 +140,21 @@ export class Renderer {
     this.shaker.style.cssText =
       'position:absolute;inset:0;display:grid;place-items:center;will-change:transform'
 
+    // Ambient chrome: pure CSS animation (keyframes live in index.html) on
+    // composited properties — alive from frame zero at no per-frame JS cost.
+    this.aurora.className = 'jr-anim'
+    this.aurora.style.cssText =
+      'position:absolute;inset:-12%;pointer-events:none;will-change:transform,opacity;' +
+      'animation:jrBreathe 6.5s ease-in-out infinite'
+    this.halo.className = 'jr-anim'
+    this.halo.style.cssText =
+      'position:absolute;width:min(120vw,120vh);height:min(120vw,120vh);border-radius:50%;' +
+      'pointer-events:none;will-change:transform;animation:jrSpin 30s linear infinite'
+    this.halo2.className = 'jr-anim'
+    this.halo2.style.cssText =
+      'position:absolute;width:min(150vw,150vh);height:min(150vw,150vh);border-radius:50%;' +
+      'pointer-events:none;will-change:transform;animation:jrSpinR 44s linear infinite'
+
     this.fx.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none'
     this.fx.width = 640; this.fx.height = 360
 
@@ -84,6 +164,12 @@ export class Renderer {
 
     this.flash.style.cssText =
       'position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .18s'
+
+    const edgeCss =
+      'position:absolute;top:0;bottom:0;width:min(13vw,96px);pointer-events:none;' +
+      'opacity:0;transition:opacity .22s;will-change:opacity'
+    this.edgeL.style.cssText = edgeCss + ';left:0'
+    this.edgeR.style.cssText = edgeCss + ';right:0'
 
     this.ring.width = 520; this.ring.height = 520
     this.ring.style.cssText =
@@ -127,11 +213,25 @@ export class Renderer {
     }
     this.hud.append(this.scoreEl, this.livesEl)
 
-    this.shaker.append(this.fx, this.vignette, this.flash, this.ring,
-      this.glyph, this.kicker, this.label, this.sub, this.combo, this.hud)
+    this.shaker.append(this.aurora, this.halo, this.halo2, this.fx, this.vignette,
+      this.flash, this.edgeL, this.edgeR, this.ring, this.glyph, this.kicker,
+      this.label, this.sub, this.combo, this.hud)
     this.root.append(this.shaker)
     this.ctx = this.ring.getContext('2d')!
     this.fxCtx = this.fx.getContext('2d')!
+
+    // Preallocate every particle this renderer will ever use.
+    for (let k = 0; k < MAX_POOL; k++) {
+      this.pool.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 1, hue: 0, kind: 'spark' })
+    }
+    const W = this.fx.width, H = this.fx.height
+    for (let k = 0; k < MAX_MOTES; k++) {
+      this.motes.push({
+        x: Math.random() * W, y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.4, vy: -(0.15 + Math.random() * 0.5),
+        ph: Math.random() * TAU, size: 0.7 + Math.random() * 1.5,
+      })
+    }
   }
 
   sync(s: GameState): void {
@@ -144,6 +244,7 @@ export class Renderer {
     d.action = s.command ? s.command.action : ''
 
     const i = intensity(s.issued)
+    const e = energyOf(s.issued, i)
     const art = (s.command && ART[s.command.action]) || ART['tap']
     const inhibit = s.phase === 'awaiting' && !!s.command && s.command.inhibit
     // A jump of more than 250ms of game time in one sync means the state was
@@ -152,14 +253,19 @@ export class Renderer {
     const posed = s.runtime - this.pRuntime > 250
     this.setSnap(posed)
 
-    this.paintBackground(s, i, inhibit)
+    if (s.phase !== this.pPhase) this.phaseChangedAt = s.runtime
+    if (inhibit && !this.wasFrozen) this.freezeT = s.runtime
+    this.wasFrozen = inhibit
+
+    this.paintBackground(s, i, e, inhibit)
     this.syncLabel(s, art, inhibit, posed)
-    this.syncHud(s, i)
-    this.syncCombo(s, i)
+    this.syncEdges(s, art, inhibit)
+    this.syncHud(s, i, e)
+    this.syncCombo(s, e)
     this.detectEvents(s, art, posed)
-    this.drawRing(s, i, art.hue, inhibit)
-    if (posed) this.seedEmbers(i)
-    this.drawFx(s, i)
+    this.drawRing(s, e, art.hue, inhibit)
+    if (posed) this.seedAmbient(e, i)
+    this.drawFx(s, i, e, inhibit)
 
     this.pIssued = s.issued
     this.pScore = s.score
@@ -170,7 +276,8 @@ export class Renderer {
 
   /** Kill CSS transitions for a posed frame so screenshots show final values. */
   private setSnap(posed: boolean): void {
-    const els: HTMLElement[] = [this.sub, this.flash, this.vignette, this.combo]
+    const els: HTMLElement[] = [this.sub, this.flash, this.vignette, this.combo,
+      this.edgeL, this.edgeR]
     for (let k = 0; k < this.livesEl.children.length; k++) {
       els.push(this.livesEl.children[k] as HTMLElement)
     }
@@ -178,19 +285,52 @@ export class Renderer {
   }
 
   // ---------------------------------------------------------------- background
-  private paintBackground(s: GameState, i: number, inhibit: boolean): void {
-    // Heats from cold night-blue toward hot violet-red as the run escalates.
+  private paintBackground(s: GameState, i: number, e: number, inhibit: boolean): void {
+    // Heats from cold night-blue toward hot violet-red as the run escalates —
+    // early lift comes from energy, the final climb into red from intensity.
     // The inhibition command inverts everything to an unmistakable cold blue.
+    let bg: string
     if (inhibit) {
-      document.body.style.background =
-        'radial-gradient(120% 90% at 50% 15%, hsl(208 72% 22%), #020813)'
+      bg = 'radial-gradient(120% 90% at 50% 15%, hsl(208 72% 22%), #020813)'
     } else if (s.phase === 'over') {
-      document.body.style.background =
-        'radial-gradient(120% 90% at 50% 15%, hsl(348 45% 12%), #0a0508)'
+      bg = 'radial-gradient(120% 90% at 50% 15%, hsl(348 45% 12%), #0a0508)'
     } else {
-      document.body.style.background =
-        `radial-gradient(120% 90% at 50% 15%, hsl(${228 + i * 112} ${42 + i * 30}% ${13 + i * 8}%), #06070b)`
+      const h = Math.round(heatHue(e, i))
+      const sat = Math.round(40 + e * 24 + i * 12)
+      const l = Math.round(13 + e * 8 + i * 3)
+      bg = `radial-gradient(120% 90% at 50% 15%, hsl(${h} ${sat}% ${l}%), #06070b)`
     }
+    if (bg !== this.bgCache) { this.bgCache = bg; document.body.style.background = bg }
+
+    // Breathing aurora + halo sweeps: gradient strings are bucketed so styles
+    // only change when the difference would be visible.
+    const bucket = (inhibit ? 'I' : s.phase === 'over' ? 'O' : 'p') +
+      Math.round(e * 20) + '.' + Math.round(i * 10)
+    if (bucket !== this.ambientCache) {
+      this.ambientCache = bucket
+      const h = inhibit ? 205 : s.phase === 'over' ? 350 : Math.round(heatHue(e, i))
+      const a = inhibit ? 0.10 : s.phase === 'over' ? 0.12 : 0.12 + e * 0.20
+      this.aurora.style.background =
+        `radial-gradient(58% 44% at 50% 30%, hsl(${h} 85% 55% / ${a.toFixed(3)}), transparent 70%)`
+      this.aurora.style.animationDuration = `${(6.5 - e * 4).toFixed(2)}s`
+      const ha = 0.06 + e * 0.13
+      this.halo.style.background =
+        `conic-gradient(from 0deg, transparent 0deg, hsl(${h + 20} 85% 60% / ${ha.toFixed(3)}) 40deg, ` +
+        `transparent 95deg, transparent 175deg, hsl(${h - 14} 85% 60% / ${(ha * 0.8).toFixed(3)}) 215deg, transparent 275deg)`
+      this.halo2.style.background =
+        `conic-gradient(from 120deg, transparent 0deg, hsl(${h + 40} 80% 62% / ${(ha * 0.7).toFixed(3)}) 55deg, transparent 130deg)`
+      this.halo.style.animationDuration = `${(30 - e * 17).toFixed(1)}s`
+      this.halo2.style.animationDuration = `${(44 - e * 22).toFixed(1)}s`
+    }
+    // DO NOTHING: the whole ambient system holds its breath.
+    const play = inhibit ? 'paused' : 'running'
+    if (play !== this.ambientPlay) {
+      this.ambientPlay = play
+      this.aurora.style.animationPlayState = play
+      this.halo.style.animationPlayState = play
+      this.halo2.style.animationPlayState = play
+    }
+
     // Danger vignette: creeps in with intensity, slams in when the window is
     // nearly gone — urgency readable without looking anywhere in particular.
     let danger = i * 0.22
@@ -207,41 +347,47 @@ export class Renderer {
     const over = s.phase === 'over'
     const idle = s.phase === 'idle'
 
-    this.label.textContent =
+    const text =
       over ? 'GAME OVER'
       : idle ? 'TAP TO START'
       : s.command ? s.command.label : ''
+    if (text !== this.cLabel) { this.cLabel = text; this.label.textContent = text }
 
-    this.label.style.color =
+    const color =
       s.phase === 'resolved' || over
         ? (s.lastResult === 'correct' ? '#5ce88f' : '#ff5c66')
         : inhibit ? INHIBIT_COLOR : '#fff'
+    if (color !== this.cLabelColor) { this.cLabelColor = color; this.label.style.color = color }
 
     this.kicker.textContent = idle || over ? 'JOLT' : ''
     this.kicker.style.color = over ? '#ff8b93' : '#9fb4ff'
 
-    // Backdrop glyph: directional cue behind the words.
-    this.glyph.textContent = idle ? '' : over ? '' : art.glyph
-    this.glyph.style.color = `hsl(${art.hue} 95% 74%)`
-    this.glyph.style.opacity = s.phase === 'awaiting' ? '.13' : '.05'
+    // Backdrop glyph: directional cue behind the words. The inhibit ✕ is the
+    // one cold exception — a faint "hands off" behind DO NOTHING.
+    const g = idle || over ? '' : art.glyph
+    if (g !== this.cGlyph) { this.cGlyph = g; this.glyph.textContent = g }
+    this.glyph.style.color = inhibit ? 'hsl(205 90% 70%)' : `hsl(${art.hue} 95% 74%)`
+    this.glyph.style.opacity = s.phase === 'awaiting' ? (inhibit ? '.09' : '.13') : '.05'
 
-    // Sub line: verdict after a resolution, score after death, hint on idle.
+    // Sub line: verdict after a resolution, score after death, hint on idle,
+    // and a tense HANDS OFF beneath the inhibition command.
+    let sub = '', subColor = '', subOp = '0'
     if (over) {
-      this.sub.textContent = `SCORE ${s.score}   ·   BEST STREAK ${s.bestStreak}`
-      this.sub.style.color = '#ffd9dc'
-      this.sub.style.opacity = '.95'
+      sub = `SCORE ${s.score}   ·   BEST STREAK ${s.bestStreak}`
+      subColor = '#ffd9dc'; subOp = '.95'
     } else if (idle) {
-      this.sub.textContent = 'OBEY THE VOICE BEFORE THE RING CLOSES'
-      this.sub.style.color = '#aab8e8'
-      this.sub.style.opacity = '.8'
+      sub = 'OBEY THE VOICE BEFORE THE RING CLOSES'
+      subColor = '#aab8e8'; subOp = '.8'
+    } else if (inhibit) {
+      sub = 'HANDS OFF'
+      subColor = INHIBIT_COLOR; subOp = '.85'
     } else if (s.phase === 'resolved' && s.lastResult && s.lastResult !== 'correct') {
-      this.sub.textContent =
-        s.lastResult === 'timeout' ? 'TOO SLOW' : this.pInhibit ? 'YOU MOVED' : 'WRONG'
-      this.sub.style.color = '#ff8b93'
-      this.sub.style.opacity = '1'
-    } else {
-      this.sub.style.opacity = '0'
+      sub = s.lastResult === 'timeout' ? 'TOO SLOW' : this.pInhibit ? 'YOU MOVED' : 'WRONG'
+      subColor = '#ff8b93'; subOp = '1'
     }
+    if (sub !== this.cSub) { this.cSub = sub; if (sub) this.sub.textContent = sub }
+    if (subColor) this.sub.style.color = subColor
+    this.sub.style.opacity = subOp
 
     // Idle breathing pulse — cancelled the moment play starts.
     if (idle && !this.idleAnim && !reducedMotion() && !posed) {
@@ -254,63 +400,78 @@ export class Renderer {
     }
   }
 
+  /** Warm side-edge glow while a MOTION command is live: "the phone itself is
+   *  the controller" reads from the periphery before the words do. */
+  private syncEdges(s: GameState, art: { hue: number; fam: Family }, inhibit: boolean): void {
+    const show = s.phase === 'awaiting' && !inhibit && art.fam === 'motion'
+    const key = show ? `on${art.hue}` : 'off'
+    if (key === this.edgeCache) return
+    this.edgeCache = key
+    if (show) {
+      this.edgeL.style.background =
+        `linear-gradient(90deg, hsl(${art.hue} 92% 58% / .34), transparent)`
+      this.edgeR.style.background =
+        `linear-gradient(-90deg, hsl(${art.hue} 92% 58% / .34), transparent)`
+    }
+    this.edgeL.style.opacity = show ? '1' : '0'
+    this.edgeR.style.opacity = show ? '1' : '0'
+  }
+
   // ---------------------------------------------------------------------- hud
-  private syncHud(s: GameState, i: number): void {
-    this.scoreEl.textContent = String(s.score)
-    this.scoreEl.style.color = `hsl(${228 + i * 112} 100% 88%)`
+  private syncHud(s: GameState, i: number, e: number): void {
+    const sc = String(s.score)
+    if (sc !== this.cScore) { this.cScore = sc; this.scoreEl.textContent = sc }
+    this.scoreEl.style.color = `hsl(${Math.round(heatHue(e, i))} 100% 88%)`
     const dots = this.livesEl.children
     for (let k = 0; k < dots.length; k++) {
       const el = dots[k] as HTMLElement
       const alive = k < s.lives
       el.style.background = alive ? '#fff' : 'transparent'
       el.style.boxShadow = alive
-        ? `0 0 ${8 + i * 8}px rgba(255,255,255,.6)`
+        ? `0 0 ${8 + e * 10}px rgba(255,255,255,.6)`
         : 'inset 0 0 0 2px rgba(255,255,255,.35)'
     }
   }
 
-  private syncCombo(s: GameState, i: number): void {
+  private syncCombo(s: GameState, e: number): void {
     const show = s.streak >= 2 && (s.phase === 'awaiting' || s.phase === 'resolved')
-    this.combo.textContent = show ? `×${s.streak}` : this.combo.textContent
+    const text = show ? `×${s.streak}` : this.cCombo
+    if (text !== this.cCombo) { this.cCombo = text; this.combo.textContent = text }
     this.combo.style.opacity = show ? '1' : '0'
     if (show) {
       // The counter itself heats up: white → gold → hot as the streak builds.
       const heat = Math.min(1, s.streak / 25)
       this.combo.style.color = `hsl(${52 - heat * 42} ${60 + heat * 40}% ${72 - heat * 8}%)`
       this.combo.style.textShadow =
-        `0 0 ${6 + heat * 22 + i * 8}px hsl(${52 - heat * 42} 100% 60% / .8)`
+        `0 0 ${6 + heat * 22 + e * 10}px hsl(${52 - heat * 42} 100% 60% / .8)`
     }
   }
 
   // ------------------------------------------------------- one-shot reactions
-  private detectEvents(s: GameState, art: { hue: number; glyph: string }, posed: boolean): void {
+  private detectEvents(s: GameState, art: { hue: number; glyph: string; fam: Family }, posed: boolean): void {
     const rm = reducedMotion() || posed
 
-    // A NEW COMMAND LANDED: snap the words in with overshoot + a shockwave.
+    // A NEW COMMAND LANDED: enter in the language of its family, + a shockwave.
     if (s.phase === 'awaiting' && s.issued !== this.pIssued) {
-      if (!rm) {
-        this.label.animate(
-          [
-            { transform: 'scale(1.55)', opacity: 0.1 },
-            { transform: 'scale(.94)', opacity: 1, offset: 0.62 },
-            { transform: 'scale(1)', opacity: 1 },
-          ],
-          { duration: 170, easing: 'cubic-bezier(.22,1.2,.36,1)' })
-        this.glyph.animate(
-          [{ transform: 'scale(.7)', opacity: 0 }, { transform: 'scale(1)', opacity: 0.11 }],
-          { duration: 220, easing: 'ease-out' })
-      }
+      if (!rm && s.command) this.enter(s.command.action, s.command.inhibit)
       if (!rm) this.shockwave(s.command && s.command.inhibit ? 205 : art.hue)
     }
 
     const resolvedNow = s.phase !== this.pPhase && (s.phase === 'resolved' || s.phase === 'over')
     if (resolvedNow && s.lastResult === 'correct') {
-      // SUCCESS: green flash + spark burst; a milestone every 5 gets a bigger one.
-      this.flash.style.background = 'rgba(92,232,143,.15)'
+      // SUCCESS: flash + spark burst. A save with almost nothing left on the
+      // clock flashes hot orange and NAMES the margin — the near-miss is felt.
+      const cmd = s.command
+      const margin = cmd ? Math.max(0, cmd.windowMs - s.elapsed) : 9999
+      const close = !!cmd && !cmd.inhibit && (margin < 150 || margin < cmd.windowMs * 0.16)
+      this.flash.style.background = close ? 'rgba(255,176,64,.22)' : 'rgba(92,232,143,.15)'
       this.flash.style.opacity = '1'
       const milestone = s.streak > 0 && s.streak % 5 === 0
-      this.burst(milestone ? 46 : 14, art.hue, milestone ? 3.4 : 2.2)
+      this.burst(milestone ? 46 : 14, milestone ? 48 : art.hue, milestone ? 3.4 : 2.2)
       if (milestone && !rm) {
+        // STREAK MILESTONE: gold bloom — banner + wave + the counter slams.
+        this.bloom(`STREAK ×${s.streak}`)
+        this.shockwave(48)
         this.combo.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(1.8)' }, { transform: 'scale(1)' }],
           { duration: 380, easing: 'cubic-bezier(.2,1.6,.4,1)' })
@@ -321,28 +482,36 @@ export class Renderer {
       }
       // Score pop + floater — only for a single command's worth of points.
       const gained = s.score - this.pScore
-      if (gained > 0 && gained <= 40) {
-        if (!rm) this.scoreEl.animate(
+      if (gained > 0 && gained <= 40 && !rm) {
+        this.scoreEl.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(1.35)' }, { transform: 'scale(1)' }],
           { duration: 220, easing: 'ease-out' })
-        if (!rm) this.floater(`+${gained}`, `hsl(${art.hue} 90% 70%)`)
+        if (close) this.floater(`+${gained} · ${Math.round(margin)}ms SAVE`, 'hsl(35 100% 66%)')
+        else this.floater(`+${gained}`, `hsl(${art.hue} 90% 70%)`)
       }
     }
 
     if (resolvedNow && (s.lastResult === 'wrong' || s.lastResult === 'timeout')) {
-      // FAILURE: hard punch — red slam, screen shake, shatter burst, a life pops.
-      this.flash.style.background = 'rgba(255,60,70,.30)'
+      // FAILURE: hard punch — red slam, twisting screen shake, shatter burst,
+      // vignette slam, and the life dot itself blows apart top-right.
+      this.flash.style.background = 'rgba(255,60,70,.38)'
       this.flash.style.opacity = '1'
-      this.burst(30, 355, 3)
+      this.burst(34, 355, 3.2)
+      this.burstAt(0.88, 0.07, 16, 355, 2.6)
       if (!rm) {
         this.shaker.animate(
           [
-            { transform: 'translate(0,0)' },
-            { transform: 'translate(-13px,6px)' }, { transform: 'translate(11px,-5px)' },
-            { transform: 'translate(-7px,-4px)' }, { transform: 'translate(5px,3px)' },
-            { transform: 'translate(0,0)' },
+            { transform: 'translate(0,0) rotate(0)' },
+            { transform: 'translate(-16px,8px) rotate(-1.1deg)' },
+            { transform: 'translate(13px,-6px) rotate(.9deg)' },
+            { transform: 'translate(-8px,-5px) rotate(-.5deg)' },
+            { transform: 'translate(6px,4px) rotate(.3deg)' },
+            { transform: 'translate(0,0) rotate(0)' },
           ],
-          { duration: 300, easing: 'ease-out' })
+          { duration: 360, easing: 'ease-out' })
+        this.vignette.animate(
+          [{ opacity: 1 }, { opacity: 0.25 }],
+          { duration: 600, easing: 'ease-out' })
         const lost = this.livesEl.children[Math.max(0, s.lives)] as HTMLElement | undefined
         if (lost) lost.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(2.1)', opacity: 0.2 }, { transform: 'scale(1)' }],
@@ -359,6 +528,68 @@ export class Renderer {
         { duration: 380, easing: 'cubic-bezier(.2,1.3,.4,1)' })
       this.burst(60, 355, 2.6)
     }
+  }
+
+  /** Label + glyph entrance in the family's own vocabulary: swipes travel the
+   *  commanded direction, TWIST rotates in, SHAKE jitters in, FLIP somersaults
+   *  in, DO NOTHING simply appears — cold and still. All ≤280ms so the words
+   *  are firmly parked long before a 300ms read. */
+  private enter(action: string, inhibit: boolean): void {
+    const spring = 'cubic-bezier(.22,1.2,.36,1)'
+    let frames: Keyframe[]
+    let dur = 190
+    if (inhibit) {
+      frames = [{ opacity: 0, transform: 'scale(1.04)' }, { opacity: 1, transform: 'scale(1)' }]
+      dur = 240
+    } else {
+      switch (action) {
+        case 'swipe-up':
+          frames = [{ transform: 'translateY(48px) scale(1.15)', opacity: 0.1 },
+            { transform: 'translateY(0) scale(1)', opacity: 1 }]; break
+        case 'swipe-down':
+          frames = [{ transform: 'translateY(-48px) scale(1.15)', opacity: 0.1 },
+            { transform: 'translateY(0) scale(1)', opacity: 1 }]; break
+        case 'swipe-left':
+          frames = [{ transform: 'translateX(48px) scale(1.15)', opacity: 0.1 },
+            { transform: 'translateX(0) scale(1)', opacity: 1 }]; break
+        case 'swipe-right':
+          frames = [{ transform: 'translateX(-48px) scale(1.15)', opacity: 0.1 },
+            { transform: 'translateX(0) scale(1)', opacity: 1 }]; break
+        case 'twist':
+          frames = [{ transform: 'rotate(-16deg) scale(1.5)', opacity: 0.1 },
+            { transform: 'rotate(4deg) scale(.96)', opacity: 1, offset: 0.65 },
+            { transform: 'rotate(0) scale(1)', opacity: 1 }]
+          dur = 230; break
+        case 'shake':
+          frames = [{ transform: 'scale(1.45)', opacity: 0.1 },
+            { transform: 'translateX(-10px) scale(1)', opacity: 1, offset: 0.4 },
+            { transform: 'translateX(8px) scale(1)', offset: 0.62 },
+            { transform: 'translateX(-5px) scale(1)', offset: 0.82 },
+            { transform: 'translateX(0) scale(1)' }]
+          dur = 280; break
+        case 'flip':
+          frames = [{ transform: 'perspective(520px) rotateX(78deg) scale(1.25)', opacity: 0.1 },
+            { transform: 'perspective(520px) rotateX(0) scale(1)', opacity: 1 }]
+          dur = 240; break
+        default:
+          frames = [{ transform: 'scale(1.55)', opacity: 0.1 },
+            { transform: 'scale(.94)', opacity: 1, offset: 0.62 },
+            { transform: 'scale(1)', opacity: 1 }]
+      }
+    }
+    this.label.animate(frames, { duration: dur, easing: spring })
+
+    const DIRG: Record<string, string> = {
+      'swipe-up': 'translateY(34px)', 'swipe-down': 'translateY(-34px)',
+      'swipe-left': 'translateX(34px)', 'swipe-right': 'translateX(-34px)',
+    }
+    const gFrom = DIRG[action]
+    const gEnd = inhibit ? 0.09 : 0.13
+    this.glyph.animate(
+      gFrom
+        ? [{ transform: gFrom, opacity: 0 }, { transform: 'none', opacity: gEnd }]
+        : [{ transform: 'scale(.7)', opacity: 0 }, { transform: 'scale(1)', opacity: gEnd }],
+      { duration: 220, easing: 'ease-out' })
   }
 
   /** Expanding DOM ring pulse around the timer — a beat marking command onset. */
@@ -397,118 +628,242 @@ export class Renderer {
     setTimeout(() => f.remove(), 900)
   }
 
+  /** Gold milestone banner blooming below the command — every 5th streak. */
+  private bloom(text: string): void {
+    if (reducedMotion()) return
+    const b = document.createElement('div')
+    b.textContent = text
+    b.style.cssText =
+      'position:absolute;top:62%;left:0;right:0;text-align:center;font-weight:800;' +
+      'font-size:clamp(20px,5.6vw,38px);letter-spacing:.18em;text-indent:.18em;' +
+      'color:#ffd76b;pointer-events:none;text-shadow:0 0 26px rgba(255,205,90,.8)'
+    this.shaker.append(b)
+    const a = b.animate(
+      [
+        { transform: 'scale(.5)', opacity: 0 },
+        { transform: 'scale(1.12)', opacity: 1, offset: 0.3 },
+        { transform: 'scale(1.2)', opacity: 0 },
+      ],
+      { duration: 700, easing: 'cubic-bezier(.2,1.2,.4,1)' })
+    a.onfinish = () => b.remove()
+    setTimeout(() => b.remove(), 1000)
+  }
+
   // ---------------------------------------------------------------- particles
+  /** Take a particle from the fixed pool; null when the pool is saturated. */
+  private take(): Particle | null {
+    if (this.alive >= MAX_POOL) return null
+    return this.pool[this.alive++]
+  }
+
+  /** Swap-kill: O(1), keeps the live particles packed at the front. */
+  private kill(k: number): void {
+    const last = --this.alive
+    const t = this.pool[k]
+    this.pool[k] = this.pool[last]
+    this.pool[last] = t
+  }
+
   /** Sparks fired outward FROM THE TIMER RING, never over the command text —
    *  celebration lives in the periphery, the words stay untouched. */
   private burst(n: number, hue: number, speed: number): void {
     const cx = this.fx.width / 2, cy = this.fx.height / 2
     // The ring spans min(80vw,80vh); its stroked radius is ~88% of that half.
     const ringR = Math.min(this.fx.width, this.fx.height) * 0.8 * 0.44
-    for (let k = 0; k < n && this.particles.length < 130; k++) {
-      const a = Math.random() * Math.PI * 2
-      const v = (0.6 + Math.random()) * speed * 1.8
-      this.particles.push({
-        x: cx + Math.cos(a) * ringR, y: cy + Math.sin(a) * ringR,
-        vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-        life: 0, max: 380 + Math.random() * 320,
-        size: 1.4 + Math.random() * 2.4, hue: hue + (Math.random() * 24 - 12),
-        kind: 'spark',
-      })
-    }
-  }
-
-  /** Put the ambient ember field straight into its steady state, so a single
-   *  posed frame shows the same energy a live player would be seeing. */
-  private seedEmbers(i: number): void {
-    this.particles = this.particles.filter((p) => p.kind !== 'ember')
-    if (i <= 0.12) return
-    const n = Math.min(60, Math.round(i * 34))
-    const W = this.fx.width, H = this.fx.height
     for (let k = 0; k < n; k++) {
-      const max = 1400 + Math.random() * 1200
-      this.particles.push({
-        x: Math.random() * W, y: Math.random() * H,
-        vx: (Math.random() - 0.5) * 0.3, vy: -(0.35 + Math.random() * 0.7) * (0.6 + i),
-        life: Math.random() * max * 0.9, max,
-        size: 0.8 + Math.random() * 1.6, hue: 228 + i * 112 + Math.random() * 30,
-        kind: 'ember',
-      })
+      const p = this.take()
+      if (!p) break
+      const a = Math.random() * TAU
+      const v = (0.6 + Math.random()) * speed * 1.8
+      p.x = cx + Math.cos(a) * ringR; p.y = cy + Math.sin(a) * ringR
+      p.vx = Math.cos(a) * v; p.vy = Math.sin(a) * v
+      p.life = 0; p.max = 380 + Math.random() * 320
+      p.size = 1.4 + Math.random() * 2.4; p.hue = hue + (Math.random() * 24 - 12)
+      p.kind = 'spark'
     }
   }
 
-  /** Ambient embers that rise faster and multiply as intensity climbs — the
-   *  late game LOOKS frantic even between commands. */
-  private drawFx(s: GameState, i: number): void {
+  /** Point burst in normalised screen coords — e.g. the life dot shattering. */
+  private burstAt(nx: number, ny: number, n: number, hue: number, speed: number): void {
+    const cx = nx * this.fx.width, cy = ny * this.fx.height
+    for (let k = 0; k < n; k++) {
+      const p = this.take()
+      if (!p) break
+      const a = Math.random() * TAU
+      const v = (0.5 + Math.random()) * speed * 1.6
+      p.x = cx; p.y = cy
+      p.vx = Math.cos(a) * v; p.vy = Math.sin(a) * v
+      p.life = 0; p.max = 320 + Math.random() * 280
+      p.size = 1.2 + Math.random() * 2; p.hue = hue + (Math.random() * 24 - 12)
+      p.kind = 'spark'
+    }
+  }
+
+  /** Put the ambient field straight into its steady state, so a single posed
+   *  frame shows the same energy a live player would be seeing. */
+  private seedAmbient(e: number, i: number): void {
+    for (let k = this.alive - 1; k >= 0; k--) {
+      if (this.pool[k].kind === 'ember') this.kill(k)
+    }
+    const W = this.fx.width, H = this.fx.height
+    const n = Math.round(e * 26)
+    for (let k = 0; k < n; k++) {
+      const p = this.take()
+      if (!p) break
+      const max = 1400 + Math.random() * 1200
+      p.x = Math.random() * W; p.y = Math.random() * H
+      p.vx = (Math.random() - 0.5) * 0.3
+      p.vy = -(0.35 + Math.random() * 0.7) * (0.6 + e)
+      p.life = Math.random() * max * 0.9; p.max = max
+      p.size = 0.8 + Math.random() * 1.6
+      p.hue = heatHue(e, i) + Math.random() * 30
+      p.kind = 'ember'
+    }
+    // Scatter the motes afresh so a posed frame is representative.
+    for (const m of this.motes) { m.x = Math.random() * W; m.y = Math.random() * H }
+  }
+
+  /** Ambient life: a drifting mote field FROM COMMAND ONE, plus rising embers
+   *  whose rate re-anchors to energy — the screen thickens visibly across the
+   *  first 30 commands and looks frantic late. During DO NOTHING everything
+   *  hangs frozen mid-air: the world holds its breath with you. */
+  private drawFx(s: GameState, i: number, e: number, inhibit: boolean): void {
     const c = this.fxCtx
     const W = this.fx.width, H = this.fx.height
     const dt = Math.min(100, Math.max(0, s.runtime - this.pRuntime)) || 16
+    const rm = reducedMotion()
+    const freeze = inhibit
 
-    if ((s.phase === 'awaiting' || s.phase === 'resolved') && i > 0.12 && !reducedMotion()) {
-      this.emberCarry += dt * i * 0.012
-      while (this.emberCarry >= 1 && this.particles.length < 130) {
+    // Ember spawn: present from the very first command (~2/s), ~13/s at full boil.
+    if ((s.phase === 'awaiting' || s.phase === 'resolved') && !freeze && !rm) {
+      this.emberCarry += dt * (0.2 + e * 1.15) * 0.01
+      while (this.emberCarry >= 1) {
         this.emberCarry--
-        this.particles.push({
-          x: Math.random() * W, y: H + 4,
-          vx: (Math.random() - 0.5) * 0.3, vy: -(0.35 + Math.random() * 0.7) * (0.6 + i),
-          life: 0, max: 1400 + Math.random() * 1200,
-          size: 0.8 + Math.random() * 1.6, hue: 228 + i * 112 + Math.random() * 30,
-          kind: 'ember',
-        })
+        const p = this.take()
+        if (!p) { this.emberCarry = 0; break }
+        p.x = Math.random() * W; p.y = H + 4
+        p.vx = (Math.random() - 0.5) * 0.3
+        p.vy = -(0.35 + Math.random() * 0.7) * (0.6 + e)
+        p.life = 0; p.max = 1400 + Math.random() * 1200
+        p.size = 0.8 + Math.random() * 1.6
+        p.hue = heatHue(e, i) + Math.random() * 30
+        p.kind = 'ember'
       }
     }
 
     c.clearRect(0, 0, W, H)
     const step = dt / 16.7
-    for (let k = this.particles.length - 1; k >= 0; k--) {
-      const p = this.particles[k]
-      p.life += dt
-      p.x += p.vx * step * 2
-      p.y += p.vy * step * 2
-      if (p.kind === 'spark') { p.vx *= 0.985; p.vy *= 0.985 }
+
+    // Mote field — always on, density and drift speed scale with energy.
+    const nm = Math.min(MAX_MOTES, 7 + Math.round(e * 27))
+    const hh = heatHue(e, i)
+    for (let k = 0; k < nm; k++) {
+      const m = this.motes[k]
+      if (!freeze && !rm) {
+        m.x += m.vx * step * (0.5 + e)
+        m.y += m.vy * step * (0.5 + e)
+        if (m.y < -8) { m.y = H + 8; m.x = (m.x + 137) % W }
+        else if (m.y > H + 8) m.y = -8
+        if (m.x < -8) m.x = W + 8
+        else if (m.x > W + 8) m.x = -8
+      }
+      const tw = 0.13 + 0.1 * Math.sin(m.ph + s.runtime * 0.0012)
+      c.fillStyle = `hsl(${hh + 18} 70% 72% / ${tw.toFixed(3)})`
+      c.beginPath()
+      c.arc(m.x, m.y, m.size, 0, TAU)
+      c.fill()
+    }
+
+    // Pooled sparks + embers.
+    for (let k = this.alive - 1; k >= 0; k--) {
+      const p = this.pool[k]
+      const held = freeze && p.kind === 'ember'   // embers hang; sparks finish
+      if (!held) {
+        p.life += dt
+        p.x += p.vx * step * 2
+        p.y += p.vy * step * 2
+        if (p.kind === 'spark') { p.vx *= 0.985; p.vy *= 0.985 }
+      }
       const t = p.life / p.max
-      if (t >= 1 || p.y < -6) { this.particles.splice(k, 1); continue }
+      if (t >= 1 || p.y < -6) { this.kill(k); continue }
       const alpha = p.kind === 'spark' ? (1 - t) * 0.9 : Math.sin(t * Math.PI) * 0.5
       c.fillStyle = `hsl(${p.hue} 90% 65% / ${alpha})`
       c.beginPath()
-      c.arc(p.x, p.y, p.size * (p.kind === 'spark' ? 1 - t * 0.5 : 1), 0, Math.PI * 2)
+      c.arc(p.x, p.y, p.size * (p.kind === 'spark' ? 1 - t * 0.5 : 1), 0, TAU)
       c.fill()
     }
   }
 
   // --------------------------------------------------------------------- ring
-  private drawRing(s: GameState, i: number, hue: number, inhibit: boolean): void {
+  private drawRing(s: GameState, e: number, hue: number, inhibit: boolean): void {
     const c = this.ctx
     const w = this.ring.width
     const baseR = w / 2 - 30
     c.clearRect(0, 0, w, w)
-    if (s.phase !== 'awaiting' || !s.command) return
+    if (s.phase === 'idle' || s.phase === 'over') return
 
-    const left = Math.max(0, 1 - s.elapsed / s.command.windowMs)
+    // Orbiters: satellites circling the ring from command one; they multiply
+    // and speed up with energy. During DO NOTHING they freeze in place.
+    const clock = inhibit ? this.freezeT : s.runtime
+    if (!reducedMotion()) {
+      const n = 1 + Math.round(e * 4)
+      const or = baseR + 24
+      c.shadowBlur = 10
+      for (let k = 0; k < n; k++) {
+        const ang = clock * 0.00055 * (1 + e * 0.8) + k * (TAU / n) + k * 0.9
+        const col = inhibit ? 'hsl(205 80% 70% / .85)' : `hsl(${hue} 90% 70% / .85)`
+        c.fillStyle = col
+        c.shadowColor = col
+        c.beginPath()
+        c.arc(w / 2 + Math.cos(ang) * or, w / 2 + Math.sin(ang) * or, 4 + e * 2.5, 0, TAU)
+        c.fill()
+      }
+      c.shadowBlur = 0
+    }
+
+    if (s.phase === 'resolved') {
+      // Verdict afterglow: the whole ring flashes the result color and fades —
+      // the space between commands is a felt beat, not a blank.
+      const t = (s.runtime - this.phaseChangedAt) / 340
+      if (t < 1 && s.lastResult) {
+        const a = (0.5 * (1 - t)).toFixed(3)
+        c.lineWidth = 10
+        c.strokeStyle = s.lastResult === 'correct'
+          ? `hsl(140 80% 60% / ${a})` : `hsl(355 85% 60% / ${a})`
+        c.beginPath(); c.arc(w / 2, w / 2, baseR, 0, TAU); c.stroke()
+      }
+      return
+    }
+    if (!s.command) return
 
     if (inhibit) {
-      // Cold, steady, dashed — visibly "not a countdown you race".
+      // Cold, static, dashed — visibly "not a countdown you race".
       c.save()
       c.setLineDash([10, 14])
       c.lineWidth = 8
       c.strokeStyle = 'hsl(205 90% 65% / .8)'
-      c.beginPath(); c.arc(w / 2, w / 2, baseR, 0, Math.PI * 2); c.stroke()
+      c.beginPath(); c.arc(w / 2, w / 2, baseR, 0, TAU); c.stroke()
       c.restore()
       return
     }
 
-    // Urgency: as the window closes the ring pulses harder and faster —
-    // a heartbeat readable in peripheral vision. Driven by engine state
-    // (elapsed), so posed screenshots render it deterministically.
+    const left = Math.max(0, 1 - s.elapsed / s.command.windowMs)
+
+    // The ring BREATHES even when safe (amplitude grows with energy), and as
+    // the window closes it pulses harder and faster — a heartbeat readable in
+    // peripheral vision. Driven by engine state, so posed screenshots render
+    // it deterministically.
     const danger = left < 0.45 ? 1 - left / 0.45 : 0
     const beat = Math.sin(s.elapsed * (0.012 + danger * 0.03))
-    const pulse = 1 + danger * 0.045 * beat
+    const breathe = Math.sin(s.runtime * 0.0028) * (0.008 + e * 0.014)
+    const pulse = 1 + breathe + danger * 0.045 * beat
     const r = baseR * pulse
-    const lw = (13 + i * 5) * (1 + danger * 0.45 * Math.abs(beat))
+    const lw = (9 + e * 10) * (1 + danger * 0.45 * Math.abs(beat))
 
     c.lineCap = 'round'
     c.lineWidth = lw
     c.strokeStyle = `hsl(${hue} 40% 50% / .14)`
-    c.beginPath(); c.arc(w / 2, w / 2, r, 0, Math.PI * 2); c.stroke()
+    c.beginPath(); c.arc(w / 2, w / 2, r, 0, TAU); c.stroke()
 
     // Green → red as the window closes, with a glow that ignites in danger.
     const ringHue = left * 130
@@ -518,15 +873,15 @@ export class Renderer {
     }
     c.strokeStyle = `hsl(${ringHue} 90% ${56 + danger * 8}%)`
     c.beginPath()
-    c.arc(w / 2, w / 2, r, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2)
+    c.arc(w / 2, w / 2, r, -Math.PI / 2, -Math.PI / 2 + left * TAU)
     c.stroke()
     c.shadowBlur = 0
 
     // Bright head on the draining edge — the eye tracks a point, not an arc.
-    const a = -Math.PI / 2 + left * Math.PI * 2
+    const a = -Math.PI / 2 + left * TAU
     c.fillStyle = `hsl(${ringHue} 95% 78%)`
     c.beginPath()
-    c.arc(w / 2 + Math.cos(a) * r, w / 2 + Math.sin(a) * r, lw * 0.62, 0, Math.PI * 2)
+    c.arc(w / 2 + Math.cos(a) * r, w / 2 + Math.sin(a) * r, lw * 0.62, 0, TAU)
     c.fill()
   }
 }

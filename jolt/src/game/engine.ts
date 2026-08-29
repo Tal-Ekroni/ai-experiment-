@@ -1,9 +1,9 @@
 /** Deterministic game core. No DOM, no audio, no timers of its own — the caller
  *  drives it with tick(dtMs) and submit(action). That is what lets the bot
  *  playtester run thousands of runs headlessly and measure fairness. */
-import { Action, GameState, RunReport, START_LIVES } from './types'
+import { Action, GameState, ModeConfig, RunReport } from './types'
 import { makeRng, Rng } from './rng'
-import { nextCommand, intensity } from './commands'
+import { MODES, nextCommand, intensity } from './commands'
 
 /** Pause between a resolved command and the next one, so the player can breathe.
  *  Shrinks as intensity rises. */
@@ -12,16 +12,31 @@ const RESOLVE_FLOOR = 140
 
 export class Engine {
   state: GameState
+  /** The mode this run plays under. Defaults to Classic, so every existing
+   *  caller (and every harness) keeps its exact previous behaviour. */
+  readonly mode: ModeConfig
   private rng: Rng
   private resolveLeft = 0
   private deathWindowMs = 0
+  /** The run ended because the mode's clock ran out — a completion, not a death. */
+  private timeUp = false
 
-  constructor(seed = 1) {
+  constructor(seed = 1, mode: ModeConfig = MODES.classic) {
+    this.mode = mode
     this.rng = makeRng(seed)
     this.state = {
       phase: 'idle', command: null, elapsed: 0, score: 0, streak: 0, bestStreak: 0,
-      lives: START_LIVES, issued: 0, runtime: 0, lastResult: null, seed,
+      lives: mode.lives, issued: 0, runtime: 0, lastResult: null, seed,
+      mode: mode.id, correct: 0,
     }
+  }
+
+  /** Command index the ramp actually sees: the run's issued count plus the
+   *  mode's head start, held under the mode's cap. Classic: identical to
+   *  state.issued. Drives windows, unlocks, pacing and intensity. */
+  effectiveIssued(): number {
+    const eff = this.state.issued + this.mode.rampOffset
+    return this.mode.rampCap > 0 ? Math.min(eff, this.mode.rampCap) : eff
   }
 
   start(): void {
@@ -31,19 +46,20 @@ export class Engine {
 
   private issue(): void {
     const s = this.state
-    s.command = nextCommand(this.rng, s.issued, s.command)
+    s.command = nextCommand(this.rng, this.effectiveIssued(), s.command)
     s.elapsed = 0
     s.issued++
     s.phase = 'awaiting'
   }
 
   private resolveGap(): number {
-    return RESOLVE_MS - (RESOLVE_MS - RESOLVE_FLOOR) * intensity(this.state.issued)
+    return RESOLVE_MS - (RESOLVE_MS - RESOLVE_FLOOR) * intensity(this.effectiveIssued())
   }
 
   private succeed(): void {
     const s = this.state
     s.lastResult = 'correct'
+    s.correct++
     s.streak++
     s.bestStreak = Math.max(s.bestStreak, s.streak)
     // Reward speed: points scale with how much of the window was left.
@@ -57,9 +73,9 @@ export class Engine {
     const s = this.state
     s.lastResult = cause
     s.streak = 0
-    s.lives--
+    if (this.mode.lifeLoss) s.lives--
     this.deathWindowMs = s.command ? s.command.windowMs : 0
-    if (s.lives <= 0) { s.phase = 'over'; return }
+    if (this.mode.lifeLoss && s.lives <= 0) { s.phase = 'over'; return }
     s.phase = 'resolved'
     this.resolveLeft = this.resolveGap() * 1.6   // a beat longer after a mistake
   }
@@ -78,6 +94,14 @@ export class Engine {
     if (s.phase === 'over' || s.phase === 'idle') return
     s.runtime += dtMs
 
+    // Time-limited modes (Zen) end on the clock, mid-command or not. This is
+    // a completion — no life is lost and report() calls it 'alive'.
+    if (this.mode.timeLimitMs > 0 && s.runtime >= this.mode.timeLimitMs) {
+      this.timeUp = true
+      s.phase = 'over'
+      return
+    }
+
     if (s.phase === 'resolved') {
       this.resolveLeft -= dtMs
       if (this.resolveLeft <= 0) this.issue()
@@ -94,13 +118,16 @@ export class Engine {
 
   report(): RunReport {
     const s = this.state
+    const died = s.phase === 'over' && !this.timeUp
     return {
       score: s.score,
       issued: s.issued,
       bestStreak: s.bestStreak,
       runtimeMs: Math.round(s.runtime),
-      deathCause: s.phase === 'over' ? (s.lastResult === 'wrong' ? 'wrong' : 'timeout') : 'alive',
-      deathAtIssued: s.phase === 'over' ? s.issued : -1,
+      mode: this.mode.id,
+      correct: s.correct,
+      deathCause: died ? (s.lastResult === 'wrong' ? 'wrong' : 'timeout') : 'alive',
+      deathAtIssued: died ? s.issued : -1,
       deathWindowMs: Math.round(this.deathWindowMs),
     }
   }
@@ -117,8 +144,10 @@ export interface BotProfile {
   errorRate: number
 }
 
-export function simulateRun(seed: number, bot: BotProfile, maxCommands = 400): RunReport {
-  const e = new Engine(seed)
+export function simulateRun(
+  seed: number, bot: BotProfile, maxCommands = 400, mode: ModeConfig = MODES.classic,
+): RunReport {
+  const e = new Engine(seed, mode)
   const rng = makeRng(seed ^ 0x9e3779b9)
   e.start()
   const STEP = 10

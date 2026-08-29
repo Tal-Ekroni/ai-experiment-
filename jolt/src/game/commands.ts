@@ -17,9 +17,53 @@
  *  - Actions that physically take longer get proportionally longer windows
  *    (a flip of the whole phone cannot be as fast as a tap).
  */
-import { Action, Command } from './types'
+import { Action, Command, ModeConfig, ModeId, START_LIVES } from './types'
 import { Rng } from './rng'
 import { gestureLatencyMs } from './input'
+
+// ---------------------------------------------------------------------------
+// Game modes
+// ---------------------------------------------------------------------------
+/** The ways to play. One config object per mode — the Engine reads these, so
+ *  behaviour differences live HERE, not as scattered ifs.
+ *  - classic: the full ride. Three lives, the whole ramp.
+ *  - sudden:  the score-chaser's mode. One life, and the ramp starts 12
+ *    commands in (window ~1050ms instead of 1700ms), so a run is all tension.
+ *  - zen:     the commuter mode. 90 seconds, mistakes never end the run, and
+ *    the ramp is capped at an effective index of 58 (~480ms windows) so it
+ *    settles into sustained flow instead of a wall.
+ *  - daily:   classic rules on a date-derived seed (see dailySeed) — one
+ *    scored attempt per calendar day, identical sequence for every player. */
+export const MODES: Record<ModeId, ModeConfig> = {
+  classic: { id: 'classic', label: 'CLASSIC', lives: START_LIVES,
+    lifeLoss: true, rampOffset: 0, rampCap: 0, timeLimitMs: 0 },
+  sudden: { id: 'sudden', label: 'SUDDEN DEATH', lives: 1,
+    lifeLoss: true, rampOffset: 12, rampCap: 0, timeLimitMs: 0 },
+  zen: { id: 'zen', label: 'ZEN', lives: START_LIVES,
+    lifeLoss: false, rampOffset: 0, rampCap: 58, timeLimitMs: 90_000 },
+  daily: { id: 'daily', label: 'DAILY', lives: START_LIVES,
+    lifeLoss: true, rampOffset: 0, rampCap: 0, timeLimitMs: 0 },
+}
+
+/** Local calendar day as a stable key, e.g. "2026-08-29". Local on purpose:
+ *  "today's challenge" should roll over at the player's midnight, and every
+ *  player on the same calendar date shares the same key — and so the same
+ *  command sequence. */
+export function dailyKey(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** Deterministic seed for a calendar day (FNV-1a over the day key). Feeds the
+ *  Engine's existing seeded RNG, so the daily run is identical everywhere. */
+export function dailySeed(key: string = dailyKey()): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
 
 interface Spec {
   action: Action

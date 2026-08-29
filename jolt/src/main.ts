@@ -3,8 +3,8 @@ import { Renderer } from './game/render'
 import { Input } from './game/input'
 import { Sound } from './game/audio'
 import { Shell, bestScore } from './game/shell'
-import { Action } from './game/types'
-import { intensity } from './game/commands'
+import { Action, ModeId } from './game/types'
+import { intensity, MODES } from './game/commands'
 
 // Zero-asset favicon (inline SVG bolt): also stops the browser's automatic
 // /favicon.ico request from 404ing in the console.
@@ -35,7 +35,7 @@ const input = new Input({ onAction: (a: Action) => handleAction(a) })
 const shell = new Shell({
   root: stage,
   enabled: !headless,
-  onPlay: () => begin(),
+  onPlay: (mode: ModeId, seed: number) => begin(mode, seed),
   onHome: () => goHome(),
   onPrime: () => sound.start(),          // inside the user gesture, before any await
   onTeachDone: (a: Action) => {
@@ -58,10 +58,10 @@ const shell = new Shell({
 })
 sound.muted = shell.muted
 
-function begin(): void {
+function begin(mode: ModeId = 'classic', seed: number = (Math.random() * 1e9) | 0): void {
   sound.start()
   void input.requestMotion()
-  engine = new Engine((Math.random() * 1e9) | 0)
+  engine = new Engine(seed, MODES[mode])
   engine.start()
   lastSpokenIssued = -1
   overHandled = false
@@ -85,12 +85,14 @@ function maybeGameOver(): void {
   const s = engine.state
   if (s.phase !== 'over') return
   overHandled = true
+  const completed = engine.report().deathCause === 'alive'   // Zen: clock ran out
   sound.gameOver()
   shell.endRun({
     score: s.score, bestStreak: s.bestStreak, issued: s.issued, runtimeMs: s.runtime,
     deathLabel: s.command ? s.command.label : null,
     deathCause: s.lastResult === 'timeout' ? 'timeout' : 'wrong',
     deathInhibit: !!(s.command && s.command.inhibit),
+    mode: s.mode, correct: s.correct, completed,
   })
 }
 
@@ -128,7 +130,9 @@ function tick(now: number) {
   if (s.phase === 'awaiting' && s.command && s.issued !== lastSpokenIssued) {
     lastSpokenIssued = s.issued
     shell.commandLanded(s.command)
-    if (!shell.maybeTeach(s.command)) sound.say(s.command.label, intensity(s.issued), s.command.windowMs)
+    if (!shell.maybeTeach(s.command)) {
+      sound.say(s.command.label, intensity(engine.effectiveIssued()), s.command.windowMs)
+    }
   }
 
   // Resolutions that happen inside tick() (not via submit): timeouts, and the
@@ -141,9 +145,9 @@ function tick(now: number) {
 
   maybeGameOver()
 
-  sound.setIntensity(intensity(s.issued))
+  sound.setIntensity(intensity(engine.effectiveIssued()))
   renderer.sync(s)
-  shell.frame(s.phase, s.score)
+  shell.frame(s)
 }
 requestAnimationFrame(tick)
 renderer.sync(engine.state)
