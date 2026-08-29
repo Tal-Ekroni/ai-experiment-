@@ -75,3 +75,25 @@ until the screens are actually rendered.
   apart and prove it.
 - Gradients and shadows that look great in light and turn to mud in dark.
 - Over-designing the happy path and forgetting the empty/first-run and the long transaction list.
+
+---
+
+# Round 2 of the design loop — "premium product," not "styled screens"
+
+The palette + type pass cleared the bar. The gap now is that it still reads as *a nicely styled
+document*, not *a product*. Close that gap. Added dimensions (same floor ≥ 8):
+
+| # | Dimension | 10 means |
+|---|---|---|
+| 8 | **Iconography & identity** | Every category has its own icon + tint; the app is scannable by shape and color, not just text. Consistent, restrained, premium — not a bag of clashing emoji. |
+| 9 | **Motion** | Content arrives with intent — cards rise/fade in, bars grow from zero, staggered. Nothing janky, nothing gratuitous; respects `prefers-reduced-motion`. |
+| 10 | **Signature moment** | The dashboard hero is a *moment*, not a number in a box — a considered focal composition someone would screenshot. |
+| 11 | **Product affordances** | A real light/dark toggle (persisted), a footer, coherent empty/first-run, states that feel finished. |
+
+## Landmines for this round
+- Emoji soup: 13 random emoji at different visual weights looks cheap. Curate for one visual family,
+  put each in a consistent tinted container so they read as a set.
+- Motion that fights the user: no long delays before content is usable, no infinite loops, honor
+  reduced-motion. Entrance only.
+- A theme toggle that flashes the wrong theme on load (FOUC) or forgets the choice.
+- Icon tints that fail contrast or collide with the over/under semantic colors.

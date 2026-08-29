@@ -2,6 +2,13 @@
 import { h, raw, escape, type Html } from './html.ts';
 import { fmt } from '../lib/money.ts';
 import { CATEGORIES } from '../lib/db.ts';
+import { catMeta } from '../lib/catmeta.ts';
+
+/** A tinted round icon chip for a category. */
+export function catIcon(cat: string): Html {
+  const m = catMeta(cat);
+  return h`<span class="ic" style="--h:${String(m.h)}">${m.icon}</span>`;
+}
 
 export function heroBlock(delta: number, label: string, caveat: string): Html {
   const over = delta > 0;
@@ -15,9 +22,9 @@ export function heroBlock(delta: number, label: string, caveat: string): Html {
 
 export function monthBars(months: { m: string; expense: number }[], partialMonth?: string): Html {
   const max = Math.max(...months.map(r => r.expense), 1);
-  return h`<div class="bars">${raw(months.map(r => {
+  return h`<div class="bars">${raw(months.map((r, i) => {
     const partial = r.m === partialMonth;
-    return `<div class="b${partial ? ' partial' : ''}" style="height:${Math.max(3, Math.round((r.expense / max) * 100))}%" data-v="${escape(fmt(r.expense))}${partial ? ' · חלקי' : ''}"></div>`;
+    return `<div class="b${partial ? ' partial' : ''}" style="height:${Math.max(3, Math.round((r.expense / max) * 100))}%;--bi:${i}" data-v="${escape(fmt(r.expense))}${partial ? ' · חלקי' : ''}"></div>`;
   }).join(''))}</div>
   <div class="bar-labels">${raw(months.map(r =>
     `<span${r.m === partialMonth ? ' class="muted"' : ''}>${escape(r.m.slice(5))}</span>`).join(''))}</div>`;
@@ -25,9 +32,10 @@ export function monthBars(months: { m: string; expense: number }[], partialMonth
 
 export function catRows(mix: { category: string; total: number }[], max?: number): Html {
   const top = max ?? Math.max(...mix.map(c => c.total), 1);
-  return raw(mix.map(c => (h`<div class="cat">
+  return raw(mix.map((c, i) => (h`<div class="cat" style="--h:${String(catMeta(c.category).h)};--i:${String(i)}">
+    ${catIcon(c.category)}
     <span class="name">${c.category}</span>
-    <span class="track"><span class="fill" style="inline-size:${Math.round((c.total / top) * 100)}%"></span></span>
+    <span class="track"><span class="fill tint" style="inline-size:${Math.round((c.total / top) * 100)}%"></span></span>
     <span class="val">${fmt(c.total)}</span>
   </div>`)).join(''));
 }

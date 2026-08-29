@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { openDb, getSetting, setSetting, CATEGORIES, OTHER } from '../lib/db.ts';
 import { fmt } from '../lib/money.ts';
 import { h, raw, escape, render, page, type Html } from './html.ts';
-import { heroBlock, monthBars, catRows, statusChips, categoryChips } from './views.ts';
+import { heroBlock, monthBars, catRows, statusChips, categoryChips, catIcon } from './views.ts';
 import { retrospect, monthOverMonth } from '../lib/retrospect.ts';
 import { reviewQueue, explainability, categorizeAll, makeLlmCategorizer } from '../lib/categorize.ts';
 import { reconciliationCoverage, classifyAll } from '../lib/ledger.ts';
@@ -128,7 +128,7 @@ function dashboard(): string {
       `${mom.prevMonth} ← ${mom.curMonth} · חודש מול חודש, לא מגמה`);
     const movers = mom.deltas.filter(d => Math.abs(d.delta) >= 100).slice(0, 3);
     follow = h`<div class="card"><h2>השינויים הגדולים</h2>
-      ${movers.map(d => h`<div class="cat"><span class="name">${d.category}</span>
+      ${movers.map(d => h`<div class="cat">${catIcon(d.category)}<span class="name">${d.category}</span>
         <span class="track"><span class="fill" style="inline-size:${Math.min(100, Math.round(Math.abs(d.delta) / Math.abs(movers[0].delta) * 100))}%;background:${d.delta > 0 ? 'var(--over)' : 'var(--under)'}"></span></span>
         <span class="val ${d.delta > 0 ? 'delta-pos' : 'delta-neg'}">${fmt(d.delta, { sign: true })}</span></div>`)}</div>`;
   } else {
@@ -196,9 +196,10 @@ function transactionsScreen(qstr: string | null): string {
   return page('תנועות', '/transactions', h`<div class="card">
     <form method="get"><input name="q" value="${qstr ?? ''}" placeholder="חיפוש"><button>חפש</button></form>
     <table><thead><tr><th>תאריך</th><th>תיאור</th><th>קטגוריה</th><th class="num">סכום</th></tr></thead><tbody>
-    ${raw(txs.map(t => h`<tr><td>${t.booking_date}</td>
-      <td><span class="desc">${t.raw_descriptor}</span>${t.flow_class === 'internal' ? h` <span class="sub">(פנימי)</span>` : ''}</td>
-      <td>${t.category ?? ''}</td><td class="num">${fmt(t.amount)}</td></tr>`).join(''))}
+    ${txs.map(t => h`<tr><td class="muted num">${t.booking_date}</td>
+      <td><span class="desc">${t.raw_descriptor}</span>${t.flow_class === 'internal' ? h` <span class="tag">פנימי</span>` : ''}</td>
+      <td><span class="cat-cell">${t.category ? catIcon(t.category) : ''}<span>${t.category ?? ''}</span></span></td>
+      <td class="num">${fmt(t.amount)}</td></tr>`)}
     </tbody></table></div>`);
 }
 
