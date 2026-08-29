@@ -135,6 +135,14 @@ export class Renderer {
   }
 
   sync(s: GameState): void {
+    // Machine-readable state mirror for the front-door QA harness: lets a bot
+    // play the real page (no ?headless= hook) and still see command identity
+    // changes, including deliberate back-to-back repeats of the same label.
+    const d = document.documentElement.dataset
+    d.phase = s.phase
+    d.issued = String(s.issued)
+    d.action = s.command ? s.command.action : ''
+
     const i = intensity(s.issued)
     const art = (s.command && ART[s.command.action]) || ART['tap']
     const inhibit = s.phase === 'awaiting' && !!s.command && s.command.inhibit

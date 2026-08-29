@@ -232,6 +232,14 @@ export class Shell {
     // Tap-anywhere handling for the current screen. Buttons stopPropagation.
     this.layer.addEventListener('pointerup', () => this.layerTap())
 
+    // Keyboard parity: the home screen itself advertises SPACE as tap, so a
+    // desktop player's first instinct must work. Space/Enter trigger the same
+    // primary action as a tap on whichever shell screen is visible.
+    addEventListener('keydown', (e: KeyboardEvent) => {
+      if (this.layer.hidden) return
+      if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); this.layerTap() }
+    })
+
     // Motion capability changes, published by the input module.
     addEventListener('jolt:motion-status', ((e: Event) => {
       const d = (e as CustomEvent<{ status?: string }>).detail
