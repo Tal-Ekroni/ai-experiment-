@@ -42,3 +42,44 @@ Run all of these before declaring any change to jolt/ done; none may regress:
 - No backend, no accounts: localStorage + URL params only.
 - Phone-first, portrait, one-handed; command legibility in <300ms is sacred.
 - Product direction lives in `jolt/ROADMAP.md`; concept history in `IDEAS.md`.
+
+## Quality bar (every change, every session)
+- Unit-test the logic; wire every new test file into `jolt/package.json`'s test
+  script in the same commit that adds it.
+- Render UI before claiming it works: screenshot via `tools/shoot.mjs` or a
+  Playwright pose, and LOOK at it. For audio, render via `tools/listen.mjs`
+  and read the metrics. A change never exercised is not done.
+- Adversarial self-review before merge: re-read your own diff asking "what
+  would the blind critic fail this for?"
+- After shipping to main: rebuild gh-pages (`node tools/make-icon.mjs` then
+  `npx vite build --base=./` in jolt/, force-push the gh-pages branch) and
+  `npx cap sync ios`.
+
+## Landmines (hard-won; must never regress)
+- **Unwired test suites shipped twice.** A green `npm test` means nothing if
+  the new suite isn't in the test script. Check the script, not the suite.
+- **A stale PR merge orphaned four commits** (round 5-7 era): GitHub merged an
+  old PR head while pushes were in flight, and a branch reset discarded the
+  rest. After ANY merge to main, verify main's CONTENTS from origin
+  (`git show origin/main:<file>`), never just the ref movement.
+- **The front door shipped broken** while every harness passed: harnesses
+  entered via a debug hatch and nobody pressed the advertised Space key on the
+  real home screen. `tools/frontdoor.mjs` exists so this cannot recur — it is
+  part of the gate, run it.
+- **`fetch()` readiness probes lie in this container**: HTTP goes through a
+  proxy, so a dead port answers instead of refusing. Probe ports with raw TCP
+  (see `portOpen` in the tools) and never poll a hardcoded port.
+- **Long-running headless scripts must log to a file incrementally** — piped
+  stdout dies with the timeout kill and you learn nothing.
+- **Mute was advisory once**: persistent audio layers (drone, buses) need
+  live gain response to the mute toggle, not just guards on one-shots.
+- **Equal-specificity CSS killed the over-screen choreography silently**:
+  `.jsh-late` lost to later nth-child rules; `animation:` shorthand erases
+  entrances. Staged reveals must be verified with computed-style probes.
+- **`playtest-latency` typical profile sits AT the 8% ceiling.** Any change
+  that effectively shrinks response windows trips the fairness gate. Budget
+  physical gesture time additively (GESTURE_LATENCY_MS), never multiplicatively.
+- **Synthetic motion traces are guesses.** The shake recogniser under-performs
+  on real devices tuned on synthesis alone; real traces from Motion Lab
+  (`capture.html`) are ground truth and become fixtures. Never tune motion
+  thresholds against synthetic data only.

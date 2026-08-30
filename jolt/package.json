@@ -12,7 +12,7 @@
     "listen": "node tools/listen.mjs",
     "playtest": "node tools/playtest.mjs",
     "playtest:latency": "node tools/playtest-latency.mjs",
-    "test": "node --test tests/input.test.mjs tests/content.test.mjs tests/mastery.test.mjs tests/beat.test.mjs tests/audio.test.mjs tests/shellui.test.mjs tests/icon.test.mjs tests/listen.test.mjs",
+    "test": "node --test tests/input.test.mjs tests/content.test.mjs tests/mastery.test.mjs tests/beat.test.mjs tests/audio.test.mjs tests/shellui.test.mjs tests/icon.test.mjs tests/listen.test.mjs tests/trace.test.mjs",
     "verify": "npm run typecheck && npm test",
     "predev": "node tools/make-icon.mjs"
   },
