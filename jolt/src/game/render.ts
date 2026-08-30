@@ -30,6 +30,7 @@
 import { GameState, ModeId } from './types'
 import { intensity, PERFECT_FRAC } from './commands'
 import { ghostScoreAt } from './engine'
+import { installTheme, FONT, COLOR, HUE } from './theme'
 
 type Family = 'touch' | 'motion' | 'inhibit'
 
@@ -52,13 +53,14 @@ const ART: Record<string, { hue: number; glyph: string; fam: Family }> = {
   'none':        { hue: 205, glyph: '✕', fam: 'inhibit' },
 }
 
-const INHIBIT_COLOR = '#66ccff'
+const INHIBIT_COLOR = COLOR.info
 const TAU = Math.PI * 2
 const MAX_POOL = 150    // sparks + embers, preallocated
 const MAX_MOTES = 34    // always-on ambient field, preallocated
 
-/** PERFECT layer look: gold, distinct from every command family hue. */
-const PERFECT_HUE = 48
+/** PERFECT layer look: the theme's one gold — the same gold as the CTA, the
+ *  grade stamp and the daily seed. Distinct from every command family hue. */
+const PERFECT_HUE = HUE.gold
 
 /** Ghost pacer gauge: a score gap of this many points swings the YOU marker to
  *  full deflection (~4-8 commands' worth — the band where a race feels live),
@@ -182,10 +184,10 @@ export class Renderer {
   private emberCarry = 0
 
   constructor(root: HTMLElement) {
+    installTheme()
     this.root = root
     this.root.style.cssText =
-      'position:fixed;inset:0;overflow:hidden;font-family:' +
-      'ui-rounded,system-ui,-apple-system,sans-serif;color:#fff;'
+      `position:fixed;inset:0;overflow:hidden;font-family:${FONT};color:${COLOR.ink};`
 
     this.shaker.style.cssText =
       'position:absolute;inset:0;display:grid;place-items:center;will-change:transform'
@@ -452,12 +454,12 @@ export class Renderer {
 
     const color =
       s.phase === 'resolved' || over
-        ? (s.lastResult === 'correct' ? '#5ce88f' : '#ff5c66')
+        ? (s.lastResult === 'correct' ? COLOR.good : COLOR.bad)
         : inhibit ? INHIBIT_COLOR : '#fff'
     if (color !== this.cLabelColor) { this.cLabelColor = color; this.label.style.color = color }
 
     this.kicker.textContent = idle || over ? 'JOLT' : ''
-    this.kicker.style.color = over ? '#ff8b93' : '#9fb4ff'
+    this.kicker.style.color = over ? COLOR.badSoft : COLOR.mark
 
     // Backdrop glyph: directional cue behind the words. The inhibit ✕ is the
     // one cold exception — a faint "hands off" behind DO NOTHING.
@@ -471,16 +473,16 @@ export class Renderer {
     let sub = '', subColor = '', subOp = '0'
     if (over) {
       sub = `SCORE ${s.score}   ·   BEST STREAK ${s.bestStreak}`
-      subColor = '#ffd9dc'; subOp = '.95'
+      subColor = COLOR.badTint; subOp = '.95'
     } else if (idle) {
       sub = 'OBEY THE VOICE BEFORE THE RING CLOSES'
-      subColor = '#aab8e8'; subOp = '.8'
+      subColor = COLOR.ink2; subOp = '.8'
     } else if (inhibit) {
       sub = 'HANDS OFF'
       subColor = INHIBIT_COLOR; subOp = '.85'
     } else if (s.phase === 'resolved' && s.lastResult && s.lastResult !== 'correct') {
       sub = s.lastResult === 'timeout' ? 'TOO SLOW' : this.pInhibit ? 'YOU MOVED' : 'WRONG'
-      subColor = '#ff8b93'; subOp = '1'
+      subColor = COLOR.badSoft; subOp = '1'
     }
     if (sub !== this.cSub) { this.cSub = sub; if (sub) this.sub.textContent = sub }
     if (subColor) this.sub.style.color = subColor
@@ -612,7 +614,7 @@ export class Renderer {
       // chain is the rarer, harder thing, and it earns the bigger moment.
       const chainMile = perfect && s.chain >= 5 && s.chain % 5 === 0
       if (chainMile) this.burst(40 + Math.min(24, s.chain), PERFECT_HUE, 3.6)
-      else if (milestone) this.burst(46, 48, 3.4)
+      else if (milestone) this.burst(46, PERFECT_HUE, 3.4)
       else if (perfect) this.burst(16 + Math.min(24, s.chain * 2), PERFECT_HUE, 2.8)
       else this.burst(14, art.hue, 2.2)
       if (chainMile && !rm) {
@@ -624,7 +626,7 @@ export class Renderer {
       } else if (milestone && !rm) {
         // STREAK MILESTONE: gold bloom — banner + wave + the counter slams.
         this.bloom(`STREAK ×${s.streak}`)
-        this.shockwave(48)
+        this.shockwave(PERFECT_HUE)
         this.combo.animate(
           [{ transform: 'scale(1)' }, { transform: 'scale(1.8)' }, { transform: 'scale(1)' }],
           { duration: 380, easing: 'cubic-bezier(.2,1.6,.4,1)' })
@@ -792,7 +794,7 @@ export class Renderer {
     b.style.cssText =
       'position:absolute;top:62%;left:0;right:0;text-align:center;font-weight:800;' +
       'font-size:clamp(20px,5.6vw,38px);letter-spacing:.18em;text-indent:.18em;' +
-      'color:#ffd76b;pointer-events:none;text-shadow:0 0 26px rgba(255,205,90,.8)'
+      `color:${COLOR.gold};pointer-events:none;text-shadow:0 0 26px rgba(255,205,90,.8)`
     this.shaker.append(b)
     const a = b.animate(
       [

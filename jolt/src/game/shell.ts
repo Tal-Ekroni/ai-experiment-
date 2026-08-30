@@ -22,6 +22,7 @@
  *  - localStorage is guarded everywhere; private mode degrades to per-session.
  */
 import { Action, Command, GameState, ModeId } from './types'
+import { installTheme, boltSvg, COLOR, HUE } from './theme'
 import { MODES, dailyKey, dailySeed } from './commands'
 import {
   DuelChallenge, duelModeFor, duelUrl, dailyShareText, challengeShareText,
@@ -357,14 +358,15 @@ interface Lesson {
 const BAND_SVG = `
   <svg viewBox="0 0 100 100" width="100%" height="100%">
     <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="9"/>
-    <path d="M 12 62.4 A 40 40 0 0 1 50 10" fill="none" stroke="#ffd76b"
+    <path d="M 12 62.4 A 40 40 0 0 1 50 10" fill="none" stroke="${COLOR.gold}"
       stroke-width="9" stroke-linecap="round"/>
-    <line x1="18.6" y1="60.2" x2="5.3" y2="64.6" stroke="#ffd76b" stroke-width="3"/>
+    <line x1="18.6" y1="60.2" x2="5.3" y2="64.6" stroke="${COLOR.gold}" stroke-width="3"/>
     <circle cx="50" cy="10" r="6.5" fill="#fff"/>
   </svg>`
 
-/** Matches render.ts's PERFECT_HUE (48) — the tutorial gold IS the game gold. */
-const PERFECT_TEACH_HUE = 48
+/** The theme's gold hue — the tutorial gold IS the game gold (render.ts's
+ *  perfect band draws from the same token). */
+const PERFECT_TEACH_HUE = HUE.gold
 
 /** Hues match render.ts's per-action accents so the tutorial and the game read
  *  as one product. TAP is deliberately absent: the player tapped to start the
@@ -578,6 +580,7 @@ export class Shell {
     this.touchDevice = typeof navigator !== 'undefined' &&
       (('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0)
 
+    installTheme()
     this.injectStyle()
     this.layer.className = 'jsh'
     this.layer.hidden = true
@@ -918,7 +921,7 @@ export class Shell {
     const m = this.meta.mode
     const best = this.stats.best[m] || 0
     const chip = best > 0
-      ? `${MODES[m].label} BEST ${best} · TOP STREAK ×${this.stats.bestStreak}`
+      ? `BEST <b>${best}</b> · TOP STREAK <b>×${this.stats.bestStreak}</b>`
       : 'FIRST RUN — IT TEACHES AS YOU GO'
     const DESC: Record<'classic' | 'sudden' | 'zen', string> = {
       classic: 'THREE LIVES · THE FULL RIDE',
@@ -940,22 +943,28 @@ export class Shell {
     const keys = !this.touchDevice
       ? '<div class="jsh-keys">SPACE TAP · ARROWS SWIPE · T TWIST · S SHAKE · F FLIP · H HOLD · P PINCH<br>1 CLASSIC · 2 SUDDEN · 3 ZEN · D DAILY</div>'
       : ''
+    // The cover of the product: crest (the bolt, with the beat alive behind
+    // it), wordmark, one gold CTA. Utilities recede to the footer.
     this.show('home', `
-      <div class="jsh-wrap jsh-ground jsh-in">
+      <div class="jsh-wrap jsh-ground jsh-home jsh-in">
+        <div class="jsh-crest"><span class="jsh-crestring"></span><span
+          class="jsh-crestring jsh-crestring2"></span>${boltSvg('clamp(40px,12vw,58px)')}</div>
         <div class="jsh-logo">JOLT</div>
         <div class="jsh-tag">OBEY THE VOICE · BEAT THE RING</div>
-        <div class="jsh-segrow">${seg}</div>
-        <div class="jsh-desc">${DESC[m]}</div>
-        <div class="jsh-chip">${chip}</div>
-        <div class="jsh-play jsh-pulse">TAP TO PLAY</div>
+        <div class="jsh-modes">
+          <div class="jsh-segrow">${seg}</div>
+          <div class="jsh-desc">${DESC[m]}</div>
+          <div class="jsh-bestline">${chip}</div>
+        </div>
+        <div class="jsh-cta jsh-pulse">PLAY</div>
         ${dailyBtn}
-        ${keys}
-        <div class="jsh-row">
+        <div class="jsh-row jsh-util">
           <button class="jsh-btn" data-act="sound">SOUND ${this.meta.muted ? 'OFF' : 'ON'}</button>
-          <button class="jsh-btn" data-act="moves">MOVES: ${this.touchMovesActive() ? 'TOUCH' : 'MOTION'}</button>
+          <button class="jsh-btn" data-act="moves">${this.touchMovesActive() ? 'TOUCH' : 'MOTION'} MOVES</button>
           <button class="jsh-btn" data-act="stats">STATS</button>
           <button class="jsh-btn" data-act="help">HELP</button>
         </div>
+        ${keys}
       </div>`)
     this.wireButtons()
   }
@@ -971,7 +980,7 @@ export class Shell {
     this.show('ask', `
       <div class="jsh-wrap jsh-dim jsh-in">
         <div class="jsh-card">
-          <div class="jsh-pill" style="color:#ffb86b;border-color:#ffb86b55">MOTION CHECK</div>
+          <div class="jsh-pill jsh-pill-gold">MOTION CHECK</div>
           <div class="jsh-h">PLAY IT PHYSICAL?</div>
           <div class="jsh-p">The best commands are real: SHAKE the phone, TWIST it like a key,
             FLIP it face-down. That needs the motion sensor — used for play only,
@@ -996,7 +1005,7 @@ export class Shell {
       ? `<div class="jsh-keys">keyboard: ${lesson.key}</div>` : ''
     const foot = cmd.inhibit
       ? `<div class="jsh-bar"><div class="jsh-barfill"></div></div>
-         <div class="jsh-note">HOLD STILL…</div>`
+         <div class="jsh-note jsh-note-cold">HOLD STILL…</div>`
       : `<div class="jsh-note jsh-pulse">${lesson.note ?? 'TRY IT NOW'}</div>`
     const accent = `hsl(${lesson.hue} 90% 62%)`
     const visual = lesson.svg
@@ -1016,17 +1025,28 @@ export class Shell {
       </div>`)
   }
 
-  /** The gold judgment strip: perfects, best chain, and — when the run earns
-   *  one — a letter grade. Absent entirely for a perfect-less run, so the gold
-   *  stays something you did, never furniture. */
-  private judgeHtml(data: OverData): string {
+  /** The gold judgment strip: perfects and best chain. Absent entirely for a
+   *  perfect-less run, so the gold stays something you did, never furniture.
+   *  `inlineGrade` keeps the letter inside the strip (duel head-to-heads,
+   *  where the score row has no room for a stamp). */
+  private judgeHtml(data: OverData, inlineGrade = false): string {
     const perfects = data.perfects ?? 0
     const bestChain = data.bestChain ?? 0
     if (perfects <= 0) return ''
-    const grade = gradeRun(perfects, data.correct ?? data.issued, bestChain)
+    const grade = inlineGrade
+      ? gradeRun(perfects, data.correct ?? data.issued, bestChain) : null
     const chain = bestChain >= 2 ? ` · CHAIN ×${bestChain}` : ''
     return `<div class="jsh-judge">${grade ? `<b>${grade}</b>` : ''}<span>${perfects} PERFECT${
       perfects === 1 ? '' : 'S'}${chain}</span></div>`
+  }
+
+  /** The grade STAMP — the emotional payoff, slammed onto the score's corner a
+   *  beat after the count-up lands. Empty when the run earned no letter. */
+  private stampHtml(data: OverData): string {
+    const perfects = data.perfects ?? 0
+    if (perfects <= 0) return ''
+    const grade = gradeRun(perfects, data.correct ?? data.issued, data.bestChain ?? 0)
+    return grade ? `<div class="jsh-stamp">${grade}</div>` : ''
   }
 
   private showOver(data: OverData, ctx: OverContext): void {
@@ -1067,7 +1087,7 @@ export class Shell {
       : mode === 'daily' ? 'DAILY RUN OVER'
       : mode === 'sudden' ? 'SUDDEN DEATH'
       : 'RUN OVER'
-    const titleColor = completed ? '#7defb0' : '#ff8b93'
+    const titleColor = completed ? 'var(--j-good)' : 'var(--j-bad-soft)'
 
     const statRow = `
         <div class="jsh-stats">
@@ -1076,6 +1096,8 @@ export class Shell {
           <span>${secs}s<i>${completed ? 'IN FLOW' : 'SURVIVED'}</i></span>
         </div>`
     const judge = this.judgeHtml(data)
+    const score = `<div class="jsh-scorewrap"><div class="jsh-score${
+      ctx.newBest ? ' jsh-gold' : ''}">0</div>${this.stampHtml(data)}</div>`
 
     // The daily ends differently: the attempt is spent, the pull is tomorrow.
     if (mode === 'daily') {
@@ -1084,17 +1106,17 @@ export class Shell {
             ctx.dailyStreak > 1 && ctx.dailyStreak === this.daily.bestStreak ? ' — YOUR LONGEST' : ''}</div>`
         : ''
       this.show('over', `
-        <div class="jsh-wrap jsh-deep jsh-in">
+        <div class="jsh-wrap jsh-deep jsh-in jsh-stage">
           <div class="jsh-kick" style="color:${titleColor}">${title}</div>
           ${killer}
-          <div class="jsh-score${ctx.newBest ? ' jsh-gold' : ''}">0</div>
+          ${score}
           ${streakLine}
           ${bestLine}
           ${statRow}
           ${judge}
-          <div class="jsh-desc">THAT WAS TODAY’S ONE TRY · NEW SEED IN ${untilMidnight()}</div>
-          <div class="jsh-play jsh-pulse">SEE YOU TOMORROW — TAP FOR MENU</div>
-          <div class="jsh-row">
+          <div class="jsh-late jsh-desc">THAT WAS TODAY’S ONE TRY · NEW SEED IN ${untilMidnight()}</div>
+          <div class="jsh-late jsh-play jsh-pulse">SEE YOU TOMORROW — TAP FOR MENU</div>
+          <div class="jsh-late jsh-row">
             <button class="jsh-btn" data-act="share">${this.canNativeShare() ? 'SHARE RESULT' : 'COPY RESULT'}</button>
             <button class="jsh-btn" data-act="challenge">CHALLENGE A FRIEND</button>
           </div>
@@ -1108,19 +1130,19 @@ export class Shell {
     // A daily still unplayed today is the strongest reason to keep going —
     // offer it right on the game-over screen.
     const dailyNudge = this.daily.day !== dailyKey()
-      ? '<button class="jsh-daily" data-act="daily">◆ TODAY’S CHALLENGE WAITS</button>'
+      ? '<button class="jsh-late jsh-daily" data-act="daily">◆ TODAY’S CHALLENGE WAITS</button>'
       : ''
     this.show('over', `
-      <div class="jsh-wrap jsh-deep jsh-in">
+      <div class="jsh-wrap jsh-deep jsh-in jsh-stage">
         <div class="jsh-kick" style="color:${titleColor}">${title}</div>
         ${killer}
-        <div class="jsh-score${ctx.newBest ? ' jsh-gold' : ''}">0</div>
+        ${score}
         ${bestLine}
         ${statRow}
         ${judge}
-        <div class="jsh-play jsh-pulse">TAP TO GO AGAIN</div>
+        <div class="jsh-late jsh-cta jsh-pulse">GO AGAIN</div>
         ${dailyNudge}
-        <div class="jsh-row">
+        <div class="jsh-late jsh-row">
           <button class="jsh-btn" data-act="challenge">CHALLENGE A FRIEND</button>
           <button class="jsh-btn" data-act="menu">MENU</button>
         </div>
@@ -1160,7 +1182,7 @@ export class Shell {
       this.show('duel', `
         <div class="jsh-wrap jsh-ground jsh-in">
           <div class="jsh-card">
-            <div class="jsh-pill" style="color:#c9a2ff;border-color:#c9a2ff55">DUEL SETTLED</div>
+            <div class="jsh-pill jsh-pill-gold">DUEL SETTLED</div>
             <div class="jsh-h">${verdict}</div>
             <div class="jsh-vs"><span>${rec.mine}<i>YOU</i></span><b>·</b><span>${ch.score}<i>THEY CLAIM</i></span></div>
             <div class="jsh-p">This sequence has been run — one try per challenge,
@@ -1178,7 +1200,7 @@ export class Shell {
     this.show('duel', `
       <div class="jsh-wrap jsh-ground jsh-in">
         <div class="jsh-card">
-          <div class="jsh-pill" style="color:#c9a2ff;border-color:#c9a2ff55">◆ DUEL ◆</div>
+          <div class="jsh-pill jsh-pill-gold">◆ DUEL ◆</div>
           <div class="jsh-h">SOMEONE CLAIMS ${ch.score}</div>
           <div class="jsh-p">On this exact sequence — ${ch.commands} command${
             ch.commands === 1 ? '' : 's'}, ${modeName} rules. You’ll face the
@@ -1204,7 +1226,7 @@ export class Shell {
     const win = mine > ch.score
     const tie = mine === ch.score
     const title = win ? 'DUEL — YOU TAKE IT' : tie ? 'DUEL — DEAD HEAT' : 'DUEL — THEY HOLD'
-    const titleColor = win ? '#7defb0' : tie ? '#ffd76b' : '#ff8b93'
+    const titleColor = win ? 'var(--j-good)' : tie ? 'var(--j-gold)' : 'var(--j-bad-soft)'
     // A completed zen duel has no killer — the clock simply ran out.
     const killer = !data.completed && data.deathLabel
       ? `<div class="jsh-cause">${
@@ -1215,7 +1237,7 @@ export class Shell {
     const margin = win ? `AHEAD BY ${mine - ch.score}` : tie ? 'NOT A POINT IN IT'
       : `${ch.score - mine} SHORT OF THE CLAIM`
     this.show('over', `
-      <div class="jsh-wrap jsh-deep jsh-in">
+      <div class="jsh-wrap jsh-deep jsh-in jsh-stage">
         <div class="jsh-kick" style="color:${titleColor}">${title}</div>
         ${killer}
         <div class="jsh-vs jsh-duelvs">
@@ -1229,9 +1251,9 @@ export class Shell {
           <span>${data.correct ?? data.issued}<i>OBEYED</i></span>
           <span>${Math.max(1, Math.round(data.runtimeMs / 1000))}s<i>SURVIVED</i></span>
         </div>
-        ${this.judgeHtml(data)}
-        <div class="jsh-play jsh-pulse">${win ? 'SEND IT BACK — TAP FOR MENU' : 'TAP FOR MENU'}</div>
-        <div class="jsh-row">
+        ${this.judgeHtml(data, true)}
+        <div class="jsh-late jsh-play jsh-pulse">${win ? 'SEND IT BACK — TAP FOR MENU' : 'TAP FOR MENU'}</div>
+        <div class="jsh-late jsh-row">
           <button class="jsh-btn jsh-pri" data-act="rebuttal">SEND THE REBUTTAL</button>
           <button class="jsh-btn" data-act="menu">MENU</button>
         </div>
@@ -1336,8 +1358,8 @@ export class Shell {
   private showPaused(): void {
     this.show('paused', `
       <div class="jsh-wrap jsh-deep jsh-in">
-        <div class="jsh-h">PAUSED</div>
-        <div class="jsh-play jsh-pulse">TAP TO RESUME</div>
+        <div class="jsh-kick">PAUSED</div>
+        <div class="jsh-cta jsh-pulse">RESUME</div>
         <div class="jsh-row">
           <button class="jsh-btn" data-act="menu">MENU</button>
         </div>
@@ -1377,9 +1399,15 @@ export class Shell {
     this.wireButtons()
   }
 
+  /** True once the screenshot harness has posed a screen: entrance/stagger
+   *  animations snap to their settled values so a single captured frame shows
+   *  the finished composition (the shell twin of render.ts's `posed` path). */
+  private snap = false
+
   /** Pose any screen with sample data — used only by the screenshot harness. */
   pose(name: string): void {
     this.enabled = true
+    this.snap = true
     if (name === 'home') this.showHome()
     else if (name === 'ask') this.showAsk()
     else if (name === 'help') this.showHelp()
@@ -1741,6 +1769,7 @@ export class Shell {
     }
     this.screen = screen
     this.layer.innerHTML = html
+    this.layer.classList.toggle('jsh-snap', this.snap)
     this.layer.hidden = false
     if (!this.splashDone) { this.splashDone = true; dismissSplash(true) }
   }
@@ -1783,161 +1812,254 @@ export class Shell {
     this.countAnim = requestAnimationFrame(step)
   }
 
+  /** Every rule below consumes theme.ts tokens (var(--j-*)) — the shell owns
+   *  layout and staging, the theme owns every color/size/easing value. */
   private injectStyle(): void {
     const st = document.createElement('style')
     st.textContent = `
 .jsh{position:absolute;inset:0;z-index:40;display:grid;place-items:center;
-  font-family:ui-rounded,system-ui,-apple-system,sans-serif;color:#fff;
+  font-family:var(--j-font);color:var(--j-ink);
   -webkit-user-select:none;user-select:none}
 .jsh[hidden]{display:none}
 .jsh-wrap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:18px;text-align:center;
-  padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
-.jsh-ground{background:radial-gradient(120% 90% at 50% 15%,hsl(228 45% 14%),#06070b)}
-.jsh-dim{background:rgba(4,5,9,.86)}
-.jsh-deep{background:radial-gradient(120% 90% at 50% 15%,#101322,#04050a)}
-.jsh-logo{font-size:clamp(56px,17vw,120px);font-weight:800;letter-spacing:.14em;text-indent:.14em;
-  line-height:1;background:linear-gradient(180deg,#fff 30%,#9fb4ff);
+  justify-content:center;gap:var(--j-s4);text-align:center;
+  padding:max(var(--j-s5),env(safe-area-inset-top)) 20px max(var(--j-s5),env(safe-area-inset-bottom))}
+.jsh-ground{background:var(--j-ground)}
+/* Overlay ground: a confident dim + real blur — cards sit on a quieted world,
+   nothing ghosts through them (the round-6 translucency critique). */
+.jsh-dim{background:var(--j-scrim);
+  -webkit-backdrop-filter:blur(18px) saturate(1.05);backdrop-filter:blur(18px) saturate(1.05)}
+.jsh-deep{background:var(--j-ground-deep)}
+
+/* ---- the cover: crest + wordmark + one gold CTA -------------------------- */
+.jsh-home{gap:var(--j-s4)}
+.jsh-home::before{content:'';position:absolute;left:-10%;right:-10%;top:-6%;height:56%;
+  background:radial-gradient(52% 58% at 50% 42%,rgba(255,205,90,.09),transparent 70%);
+  pointer-events:none;animation:jshBreath 4.2s ease-in-out infinite}
+.jsh-crest{position:relative;display:grid;place-items:center;
+  min-height:clamp(64px,19vw,92px)}
+.jsh-crestring{position:absolute;width:clamp(58px,17vw,84px);height:clamp(58px,17vw,84px);
+  border-radius:50%;border:1.5px solid rgba(255,215,107,.32);pointer-events:none;
+  animation:jshBeatRing 2.2s var(--j-swift) infinite}
+.jsh-crestring2{animation-delay:1.1s}
+.jsh-logo{font-size:var(--j-t-display);font-weight:800;letter-spacing:var(--j-tr-wide);
+  text-indent:var(--j-tr-wide);line-height:1;
+  background:linear-gradient(180deg,#fff 30%,var(--j-mark));
   -webkit-background-clip:text;background-clip:text;color:transparent;
   filter:drop-shadow(0 6px 30px rgba(120,150,255,.45))}
-.jsh-tag{font-size:clamp(11px,2.9vw,15px);font-weight:700;letter-spacing:.3em;text-indent:.3em;
-  color:#aab8e8;opacity:.85}
-.jsh-kick{font-weight:800;font-size:clamp(14px,3.4vw,20px);letter-spacing:.5em;text-indent:.5em;opacity:.85}
-.jsh-cause{font-weight:700;font-size:clamp(12px,3.1vw,15px);letter-spacing:.2em;text-indent:.2em;
-  color:#8b98c4;margin-top:-8px}
-.jsh-chip{font-weight:700;font-size:clamp(12px,3vw,16px);letter-spacing:.14em;color:#dfe6ff;
-  border:1.5px solid rgba(255,255,255,.18);border-radius:999px;padding:8px 18px;
-  background:rgba(255,255,255,.05)}
-.jsh-play{font-weight:800;font-size:clamp(22px,6.5vw,40px);letter-spacing:.08em;
-  text-shadow:0 4px 24px rgba(0,0,0,.55);margin-top:8px}
-.jsh-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px}
-.jsh-btn{appearance:none;border:1.5px solid rgba(255,255,255,.28);border-radius:999px;
-  background:rgba(255,255,255,.06);color:#dfe6ff;font-weight:700;letter-spacing:.12em;
-  font-size:clamp(11px,2.8vw,14px);padding:13px 18px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation;transition:transform .1s ease,background .18s ease}
-.jsh-btn:active{background:rgba(255,255,255,.16);transform:scale(.95)}
-.jsh-pri{background:#5ce88f;color:#062012;border-color:transparent;
-  box-shadow:0 0 24px rgba(92,232,143,.35)}
-.jsh-pri:active{background:#7df0a7;transform:scale(.95)}
-.jsh-card{display:flex;flex-direction:column;align-items:center;gap:14px;max-width:min(88vw,420px);
-  border:1.5px solid rgba(255,255,255,.16);border-radius:22px;padding:26px 24px;
-  background:linear-gradient(180deg,rgba(20,24,40,.92),rgba(8,10,18,.94));
-  box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.jsh-tag{font-size:var(--j-t-caption);font-weight:700;letter-spacing:var(--j-tr-caps);
+  text-indent:var(--j-tr-caps);color:var(--j-ink3);margin-top:calc(-1*var(--j-s2))}
+.jsh-modes{display:flex;flex-direction:column;align-items:center;gap:var(--j-s3);
+  margin-top:var(--j-s3)}
+.jsh-bestline{font-weight:700;font-size:var(--j-t-caption);letter-spacing:var(--j-tr-wide);
+  color:var(--j-ink3)}
+.jsh-bestline b{color:var(--j-ink2);font-weight:800}
+.jsh-util{margin-top:var(--j-s2)}
+.jsh-util .jsh-btn{border-color:transparent;background:rgba(163,178,236,.07);color:var(--j-ink3)}
+
+/* THE action. Gold means go: the same pill on home, over and paused. */
+.jsh-cta{display:inline-flex;align-items:center;justify-content:center;
+  min-width:min(50vw,220px);min-height:52px;padding:13px 34px;border-radius:var(--j-r-pill);
+  background:linear-gradient(180deg,#ffe191,var(--j-gold) 52%,var(--j-gold-hot));
+  color:var(--j-on-gold);font-weight:800;font-size:var(--j-t-cta);
+  letter-spacing:var(--j-tr-caps);text-indent:var(--j-tr-caps);cursor:pointer;
+  box-shadow:0 10px 38px rgba(255,195,60,.28),0 2px 8px rgba(0,0,0,.4),
+    inset 0 1.5px 0 rgba(255,255,255,.55),inset 0 -2px 0 rgba(122,70,0,.28);
+  margin-top:var(--j-s2);transition:transform var(--j-fast) var(--j-swift)}
+.jsh-cta:active{transform:scale(.96)}
+
+.jsh-kick{font-weight:800;font-size:clamp(14px,3.4vw,20px);letter-spacing:.5em;
+  text-indent:.5em;opacity:.9}
+.jsh-cause{font-weight:700;font-size:var(--j-t-label);letter-spacing:.2em;text-indent:.2em;
+  color:var(--j-ink3);margin-top:calc(-1*var(--j-s2))}
+.jsh-chip{font-weight:700;font-size:var(--j-t-label);letter-spacing:var(--j-tr-norm);
+  color:var(--j-ink);border:1.5px solid var(--j-edge);border-radius:var(--j-r-pill);
+  padding:8px 16px;background:rgba(163,178,236,.06)}
+.jsh-play{font-weight:800;font-size:clamp(20px,5.6vw,34px);letter-spacing:var(--j-tr-norm);
+  text-shadow:0 4px 24px rgba(0,0,0,.55);margin-top:var(--j-s2)}
+.jsh-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:var(--j-s2)}
+.jsh-btn{appearance:none;border:1.5px solid var(--j-edge);border-radius:var(--j-r-pill);
+  background:rgba(163,178,236,.07);color:var(--j-ink2);font-weight:700;
+  letter-spacing:var(--j-tr-wide);font-size:var(--j-t-label);padding:13px 18px;
+  font-family:inherit;cursor:pointer;touch-action:manipulation;
+  transition:transform var(--j-fast) var(--j-swift),background var(--j-med) var(--j-swift)}
+.jsh-btn:active{background:rgba(163,178,236,.18);transform:scale(.95)}
+.jsh-btn:focus-visible,.jsh-seg:focus-visible,.jsh-daily:focus-visible{
+  outline:2px solid var(--j-info-soft);outline-offset:2px}
+.jsh-pri{background:linear-gradient(180deg,#ffe191,var(--j-gold) 52%,var(--j-gold-hot));
+  color:var(--j-on-gold);border-color:transparent;font-weight:800;
+  box-shadow:0 6px 26px rgba(255,195,60,.26),inset 0 1px 0 rgba(255,255,255,.5)}
+.jsh-pri:active{transform:scale(.95)}
+
+/* Cards: near-opaque surface, hairline edge, top light — one material. */
+.jsh-card{display:flex;flex-direction:column;align-items:center;gap:var(--j-s4);
+  max-width:min(88vw,420px);border:1px solid var(--j-edge);border-radius:var(--j-r-card);
+  padding:var(--j-s6) var(--j-s5);background:var(--j-card);
+  box-shadow:0 24px 80px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.07)}
 .jsh-card.jsh-left{align-items:stretch;text-align:left}
-.jsh-pill{font-weight:800;font-size:12px;letter-spacing:.34em;text-indent:.34em;
-  border:1.5px solid;border-radius:999px;padding:6px 14px}
-.jsh-glyph{font-size:clamp(54px,16vw,96px);font-weight:800;line-height:1}
-.jsh-h{font-weight:800;font-size:clamp(24px,7vw,44px);letter-spacing:.02em;
+.jsh-pill{font-weight:800;font-size:var(--j-t-micro);letter-spacing:var(--j-tr-caps);
+  text-indent:var(--j-tr-caps);border:1.5px solid;border-radius:var(--j-r-pill);
+  padding:6px 14px}
+.jsh-pill-gold{color:var(--j-gold);border-color:rgba(255,215,107,.4);
+  background:rgba(255,215,107,.06)}
+.jsh-glyph{font-size:clamp(54px,16vw,96px);font-weight:800;line-height:1;
+  filter:drop-shadow(0 0 22px currentColor)}
+.jsh-h{font-weight:800;font-size:var(--j-t-title);letter-spacing:var(--j-tr-tight);
   text-shadow:0 4px 24px rgba(0,0,0,.55)}
-.jsh-p{font-size:clamp(14px,3.6vw,17px);line-height:1.5;color:#cfd8f5}
-.jsh-p.jsh-small{font-size:clamp(12px,3vw,14px);color:#93a0c9}
-.jsh-note{font-weight:800;font-size:clamp(14px,3.8vw,19px);letter-spacing:.18em;color:#5ce88f}
-.jsh-note.jsh-bad{color:#ff8b93}
-.jsh-keys{font-size:11px;letter-spacing:.16em;color:#7c89b4}
-.jsh-bar{width:80%;height:8px;border-radius:99px;background:rgba(255,255,255,.12);overflow:hidden}
-.jsh-barfill{height:100%;width:0;border-radius:99px;background:#66ccff;
+.jsh-p{font-size:var(--j-t-body);line-height:1.55;color:var(--j-ink2)}
+.jsh-p.jsh-small{font-size:var(--j-t-caption);letter-spacing:.02em;color:var(--j-ink3)}
+.jsh-note{font-weight:800;font-size:clamp(14px,3.8vw,19px);letter-spacing:.18em;
+  color:var(--j-gold)}
+.jsh-note.jsh-note-cold{color:var(--j-info)}
+.jsh-note.jsh-bad{color:var(--j-bad-soft)}
+.jsh-keys{font-size:var(--j-t-micro);letter-spacing:.16em;line-height:1.9;color:var(--j-ink4)}
+.jsh-bar{width:80%;height:8px;border-radius:var(--j-r-pill);background:rgba(163,178,236,.14);
+  overflow:hidden}
+.jsh-barfill{height:100%;width:0;border-radius:var(--j-r-pill);background:var(--j-info);
   animation:jshFill 1.6s linear forwards}
-.jsh-score{font-weight:800;font-size:clamp(64px,20vw,130px);line-height:1;
-  text-shadow:0 6px 40px rgba(255,255,255,.25)}
-.jsh-score.jsh-gold{color:#ffd76b;text-shadow:0 0 44px rgba(255,205,90,.55)}
-.jsh-best{font-weight:800;font-size:clamp(15px,4vw,22px);letter-spacing:.26em;text-indent:.26em;
-  color:#ffd76b;text-shadow:0 0 22px rgba(255,205,90,.6)}
+
+/* ---- the reveal: score counts, the stamp slams, then the actions --------- */
+.jsh-scorewrap{position:relative}
+.jsh-score{font-weight:800;font-size:var(--j-t-score);line-height:1;
+  text-shadow:0 6px 40px rgba(255,255,255,.25);font-variant-numeric:tabular-nums}
+.jsh-score.jsh-gold{color:var(--j-gold);text-shadow:0 0 44px rgba(255,205,90,.55)}
+.jsh-stamp{position:absolute;top:-2px;right:-38px;transform:rotate(-9deg);
+  font-weight:800;font-size:clamp(26px,8vw,44px);line-height:1;color:var(--j-gold);
+  border:3px solid var(--j-gold);border-radius:14px;padding:4px 13px;
+  background:rgba(255,215,107,.07);text-shadow:0 0 20px rgba(255,205,90,.7);
+  box-shadow:0 0 30px rgba(255,205,90,.3),inset 0 0 16px rgba(255,205,90,.12);
+  animation:jshStamp var(--j-slow) var(--j-spring) .9s backwards}
+.jsh-stage .jsh-late{animation-delay:1.05s}
+.jsh-best{font-weight:800;font-size:clamp(15px,4vw,22px);letter-spacing:var(--j-tr-caps);
+  text-indent:var(--j-tr-caps);color:var(--j-gold);text-shadow:0 0 22px rgba(255,205,90,.6)}
 .jsh-vs{display:flex;gap:18px;align-items:baseline;justify-content:center;font-weight:800;
   font-size:clamp(30px,9vw,52px);line-height:1}
 .jsh-vs span{display:flex;flex-direction:column;align-items:center;gap:5px}
-.jsh-vs b{color:#7c89b4;font-size:clamp(18px,5vw,28px)}
-.jsh-vs i{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.24em;color:#8b98c4}
+.jsh-vs b{color:var(--j-ink3);font-size:clamp(18px,5vw,28px)}
+.jsh-vs i{font-style:normal;font-weight:700;font-size:var(--j-t-micro);
+  letter-spacing:var(--j-tr-caps);color:var(--j-ink3)}
 /* Duel over: the head-to-head IS the hero — your side counts up big and
    bright, their claim sits at the same scale but dimmer. */
 .jsh-duelvs .jsh-score{font-style:normal;font-size:clamp(48px,15vw,92px);line-height:1}
 .jsh-duelvs .jsh-their{font-style:normal;font-size:clamp(48px,15vw,92px);line-height:1;
-  color:#9aa6cf;text-shadow:none}
-.jsh-judge{display:flex;align-items:center;gap:12px;color:#ffd76b;font-weight:800;
-  font-size:clamp(12px,3.1vw,15px);letter-spacing:.14em;
-  border:1.5px solid rgba(255,215,107,.4);border-radius:999px;padding:7px 20px;
+  color:var(--j-ink3);text-shadow:none}
+.jsh-judge{display:flex;align-items:center;gap:12px;color:var(--j-gold);font-weight:800;
+  font-size:var(--j-t-label);letter-spacing:var(--j-tr-wide);
+  border:1.5px solid rgba(255,215,107,.4);border-radius:var(--j-r-pill);padding:7px 20px;
   background:rgba(255,215,107,.07);box-shadow:0 0 22px rgba(255,205,90,.12)}
 .jsh-judge b{font-size:clamp(21px,5.8vw,32px);line-height:1;
   text-shadow:0 0 18px rgba(255,205,90,.75)}
-.jsh-goldcell{color:#ffd76b;text-shadow:0 0 14px rgba(255,205,90,.3)}
+.jsh-goldcell{color:var(--j-gold);text-shadow:0 0 14px rgba(255,205,90,.3)}
 .jsh-ringviz{width:clamp(96px,28vw,140px);height:clamp(96px,28vw,140px);
   filter:drop-shadow(0 0 16px rgba(255,205,90,.35))}
-.jsh-stats{display:flex;gap:26px;justify-content:center;font-weight:800;
-  font-size:clamp(18px,5vw,28px)}
+.jsh-stats{display:flex;gap:var(--j-s5);justify-content:center;font-weight:800;
+  font-size:clamp(18px,5vw,28px);font-variant-numeric:tabular-nums}
 .jsh-stats span{display:flex;flex-direction:column;gap:4px}
-.jsh-stats i{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.22em;color:#8b98c4}
+.jsh-stats i{font-style:normal;font-weight:700;font-size:var(--j-t-micro);
+  letter-spacing:.22em;color:var(--j-ink3)}
 .jsh-legend{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;align-items:baseline;
   font-size:clamp(12px,3.2vw,15px)}
-.jsh-legend b{font-weight:800;letter-spacing:.08em;color:#fff;text-align:right}
-.jsh-legend span{color:#aab8e8}
-.jsh-segrow{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
-.jsh-seg{appearance:none;border:1.5px solid rgba(255,255,255,.22);border-radius:999px;
-  background:rgba(255,255,255,.05);color:#aab8e8;font-weight:800;letter-spacing:.14em;
-  font-size:clamp(12px,3vw,15px);padding:12px 18px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation;transition:transform .1s ease,background .18s ease,
-  color .18s ease,box-shadow .18s ease}
-.jsh-seg:active{background:rgba(255,255,255,.14);transform:scale(.95)}
-.jsh-seg-on{background:#dfe6ff;color:#0a0f1c;border-color:transparent;
+.jsh-legend b{font-weight:800;letter-spacing:var(--j-tr-norm);color:var(--j-ink);
+  text-align:right}
+.jsh-legend span{color:var(--j-ink2)}
+.jsh-segrow{display:flex;gap:var(--j-s2);justify-content:center;flex-wrap:wrap}
+.jsh-seg{appearance:none;border:1.5px solid var(--j-edge);border-radius:var(--j-r-pill);
+  background:rgba(163,178,236,.05);color:var(--j-ink2);font-weight:800;
+  letter-spacing:var(--j-tr-wide);font-size:var(--j-t-label);padding:12px 18px;
+  font-family:inherit;cursor:pointer;touch-action:manipulation;
+  transition:transform var(--j-fast) var(--j-swift),background var(--j-med) var(--j-swift),
+  color var(--j-med) var(--j-swift),box-shadow var(--j-med) var(--j-swift)}
+.jsh-seg:active{background:rgba(163,178,236,.15);transform:scale(.95)}
+.jsh-seg-on{background:#e6ebff;color:#0a0f1c;border-color:transparent;
   box-shadow:0 0 22px rgba(160,180,255,.4)}
-.jsh-desc{font-weight:700;font-size:clamp(11px,2.8vw,13px);letter-spacing:.22em;text-indent:.22em;
-  color:#7c89b4}
-.jsh-daily{appearance:none;border:1.5px solid rgba(255,215,107,.55);border-radius:999px;
-  background:rgba(255,215,107,.08);color:#ffd76b;font-weight:800;letter-spacing:.12em;
-  font-size:clamp(12px,3.1vw,15px);padding:13px 22px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation;box-shadow:0 0 22px rgba(255,205,90,.18);
-  transition:transform .1s ease,background .18s ease}
+.jsh-desc{font-weight:700;font-size:var(--j-t-caption);letter-spacing:.22em;
+  text-indent:.22em;color:var(--j-ink3)}
+.jsh-daily{appearance:none;border:1.5px solid rgba(255,215,107,.5);
+  border-radius:var(--j-r-pill);background:rgba(255,215,107,.07);color:var(--j-gold);
+  font-weight:800;letter-spacing:var(--j-tr-wide);font-size:var(--j-t-label);
+  padding:13px 22px;font-family:inherit;cursor:pointer;touch-action:manipulation;
+  box-shadow:0 0 22px rgba(255,205,90,.15);
+  transition:transform var(--j-fast) var(--j-swift),background var(--j-med) var(--j-swift)}
 .jsh-daily:active{background:rgba(255,215,107,.2);transform:scale(.96)}
-.jsh-daily-done{border-color:rgba(255,255,255,.2);background:rgba(255,255,255,.04);
-  color:#93a0c9;box-shadow:none}
-.jsh-daychip{color:#ffd76b;border-color:rgba(255,215,107,.45)}
-.jsh-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 10px;text-align:center;
-  font-weight:800;font-size:clamp(20px,5.4vw,30px)}
+.jsh-daily-done{border-color:var(--j-edge-soft);background:rgba(163,178,236,.05);
+  color:var(--j-ink3);box-shadow:none}
+.jsh-daychip{color:var(--j-gold);border-color:rgba(255,215,107,.45)}
+.jsh-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--j-s4) 10px;text-align:center;
+  font-weight:800;font-size:clamp(20px,5.4vw,30px);font-variant-numeric:tabular-nums}
 .jsh-grid span{display:flex;flex-direction:column;gap:4px}
-.jsh-grid i{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.18em;color:#8b98c4}
+.jsh-grid i{font-style:normal;font-weight:700;font-size:var(--j-t-micro);
+  letter-spacing:.18em;color:var(--j-ink3)}
 .jsh-clock{position:absolute;left:50%;top:max(18px,env(safe-area-inset-top));
-  transform:translateX(-50%);z-index:35;font-family:ui-rounded,system-ui,-apple-system,sans-serif;
-  font-weight:800;font-size:clamp(14px,3.4vw,20px);letter-spacing:.12em;color:#9fe6ff;
-  pointer-events:none;text-shadow:0 0 18px rgba(120,210,255,.5)}
+  transform:translateX(-50%);z-index:35;font-family:var(--j-font);
+  font-weight:800;font-size:clamp(14px,3.4vw,20px);letter-spacing:var(--j-tr-wide);
+  color:var(--j-info-soft);pointer-events:none;text-shadow:0 0 18px rgba(120,210,255,.5);
+  font-variant-numeric:tabular-nums}
 .jsh-clock[hidden]{display:none}
 .jsh-hint{position:absolute;left:50%;bottom:22%;transform:translateX(-50%);z-index:35;
-  font-family:ui-rounded,system-ui,-apple-system,sans-serif;font-weight:800;
-  font-size:clamp(13px,3.4vw,18px);letter-spacing:.14em;color:#0a0f1c;background:#9fe6ff;
-  border-radius:999px;padding:9px 20px;pointer-events:none;white-space:nowrap;
+  font-family:var(--j-font);font-weight:800;font-size:clamp(13px,3.4vw,18px);
+  letter-spacing:var(--j-tr-wide);color:#0a0f1c;background:var(--j-info-soft);
+  border-radius:var(--j-r-pill);padding:9px 20px;pointer-events:none;white-space:nowrap;
   box-shadow:0 0 26px rgba(120,210,255,.5)}
 .jsh-hint[hidden]{display:none}
 .jsh-toast{position:absolute;left:50%;bottom:max(20px,env(safe-area-inset-bottom));
-  transform:translateX(-50%);z-index:60;font-family:ui-rounded,system-ui,-apple-system,sans-serif;
-  font-weight:700;font-size:clamp(11px,2.9vw,14px);letter-spacing:.12em;color:#dfe6ff;
-  background:rgba(14,18,32,.94);border:1.5px solid rgba(255,255,255,.2);border-radius:999px;
-  padding:10px 20px;pointer-events:none;white-space:nowrap}
+  transform:translateX(-50%);z-index:60;font-family:var(--j-font);
+  font-weight:700;font-size:var(--j-t-label);letter-spacing:var(--j-tr-wide);
+  color:var(--j-ink);background:rgba(14,18,32,.96);border:1px solid var(--j-edge);
+  border-radius:var(--j-r-pill);padding:10px 20px;pointer-events:none;white-space:nowrap;
+  box-shadow:0 10px 34px rgba(0,0,0,.5)}
 .jsh-toast[hidden]{display:none}
 .jsh-toast.jsh-toast-wrap{white-space:normal;word-break:break-all;
   max-width:min(86vw,420px);border-radius:18px;text-align:center;line-height:1.5}
-.jsh-in{animation:jshIn .32s cubic-bezier(.2,1.1,.4,1)}
+.jsh-in{animation:jshIn .32s var(--j-swift)}
 /* One entrance grammar for every screen: children rise in a quick cascade, so
    home, over, duel and stats all move like the same designed object. */
-.jsh-in>*{animation:jshRise .5s cubic-bezier(.18,.9,.32,1) backwards}
-.jsh-in>*:nth-child(2){animation-delay:.04s}
-.jsh-in>*:nth-child(3){animation-delay:.08s}
-.jsh-in>*:nth-child(4){animation-delay:.12s}
-.jsh-in>*:nth-child(5){animation-delay:.16s}
-.jsh-in>*:nth-child(6){animation-delay:.19s}
-.jsh-in>*:nth-child(7){animation-delay:.22s}
-.jsh-in>*:nth-child(8){animation-delay:.25s}
-.jsh-in>*:nth-child(n+9){animation-delay:.28s}
+.jsh-in>*{animation:jshRise var(--j-slow) var(--j-swift) backwards}
+.jsh-in>*:nth-child(2){animation-delay:.05s}
+.jsh-in>*:nth-child(3){animation-delay:.1s}
+.jsh-in>*:nth-child(4){animation-delay:.15s}
+.jsh-in>*:nth-child(5){animation-delay:.2s}
+.jsh-in>*:nth-child(6){animation-delay:.24s}
+.jsh-in>*:nth-child(7){animation-delay:.28s}
+.jsh-in>*:nth-child(8){animation-delay:.32s}
+.jsh-in>*:nth-child(n+9){animation-delay:.36s}
+/* Staged reveal (over screens): the cascade above lands the facts, then the
+   actions arrive on the .jsh-late beat — after the count-up and the stamp.
+   Purely visual staging: every control is live from the first frame. */
 .jsh-pulse{animation:jshPulse 1.5s ease-in-out infinite}
-.jsh-pop{animation:jshPop .5s cubic-bezier(.2,1.6,.4,1)}
+.jsh-pop{animation:jshPop var(--j-slow) var(--j-spring)}
+/* Cascade repair (round-7 critic, confirmed dead choreography): the .jsh-late
+   beat must OUTRANK the nth-child cascade above (equal specificity loses on
+   source order), and .jsh-pulse's shorthand must not erase the entrance — the
+   pulse rides as a second animation that starts only after its element lands. */
+.jsh-stage .jsh-in>.jsh-late,.jsh-stage .jsh-in .jsh-late{animation-delay:1.05s}
+.jsh-in>.jsh-pulse{animation:jshRise var(--j-slow) var(--j-swift) backwards,jshPulse 1.5s ease-in-out .9s infinite}
+.jsh-stage .jsh-in>.jsh-pulse.jsh-late,.jsh-stage .jsh-in .jsh-pulse.jsh-late{animation:jshRise var(--j-slow) var(--j-swift) 1.05s backwards,jshPulse 1.5s ease-in-out 2s infinite}
 @keyframes jshIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
-@keyframes jshPulse{0%,100%{transform:scale(1);opacity:.92}50%{transform:scale(1.06);opacity:1}}
+@keyframes jshPulse{0%,100%{transform:scale(1);opacity:.92}50%{transform:scale(1.05);opacity:1}}
 @keyframes jshPop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
 @keyframes jshShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-9px)}
   60%{transform:translateX(7px)}80%{transform:translateX(-4px)}}
 @keyframes jshFill{from{width:0}to{width:100%}}
 @keyframes jshToast{0%{opacity:0;transform:translateX(-50%) translateY(12px)}
   10%,80%{opacity:1;transform:translateX(-50%)}100%{opacity:0;transform:translateX(-50%)}}
-@keyframes jshRise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes jshRise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes jshStamp{from{opacity:0;transform:scale(2.5) rotate(5deg)}
+  65%{opacity:1;transform:scale(.93) rotate(-11deg)}
+  to{opacity:1;transform:scale(1) rotate(-9deg)}}
+@keyframes jshBeatRing{from{opacity:0;transform:scale(.62)}
+  18%{opacity:.55}to{opacity:0;transform:scale(1.28)}}
+@keyframes jshBreath{0%,100%{opacity:.55}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){
-  .jsh-in,.jsh-pulse,.jsh-pop,.jsh-in>*{animation:none}
-}`
+  .jsh-in,.jsh-pulse,.jsh-pop,.jsh-in>*,.jsh-stamp,.jsh-crestring,.jsh-home::before{
+    animation:none}
+  .jsh-crestring{opacity:0}
+}
+/* Posed screenshots (harness only): freeze every entrance at its settled
+   value so a single frame shows the finished composition. */
+.jsh-snap .jsh-in,.jsh-snap .jsh-in>*,.jsh-snap .jsh-pulse,.jsh-snap .jsh-pop,
+.jsh-snap .jsh-stamp,.jsh-snap .jsh-home::before{animation:none!important}
+.jsh-snap .jsh-crestring{animation:none!important;opacity:.35;transform:scale(1.04)}
+.jsh-snap .jsh-crestring2{opacity:.14;transform:scale(1.16)}`
     document.head.append(st)
   }
 }

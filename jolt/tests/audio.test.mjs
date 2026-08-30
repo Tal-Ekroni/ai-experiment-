@@ -1,15 +1,20 @@
-/** Audio-layer structural tests. This container has no speakers, so the sound
- *  design is verified by inspection plus structure: the pure music arithmetic
- *  (grid quantisation, catch-up clamp, engine-clock nudge, the arrangement
- *  state machine, kick patterns, bass riff rotation, the perfect-chain pitch
- *  ladder, the player-riff FIFO, the generated saturation curve and reverb
- *  impulse) unit-tested directly, and the full Sound class driven through a
- *  simulated 600-command session against a fake AudioContext that counts every
- *  node created/disconnected — proving the judgment tier is audibly bigger
- *  than a plain correct, drops are earned by gameplay and land bar-aligned,
- *  the kick pumps the sidechain bus, mute toggles can't fabricate chain
- *  breaks, pause/resume re-arms the countdown, and an hour-scale session
- *  leaks no nodes.
+/** Audio-layer structural tests. The MIX is graded by tools/listen.mjs
+ *  (offline renders of the real graph, measured); this suite proves the
+ *  STRUCTURE: the pure music arithmetic (grid quantisation — including the
+ *  round-7 beyond-horizon forward walk — catch-up clamp, engine-clock nudge,
+ *  the arrangement state machine, kick patterns, the round-7 chord
+ *  progression with its voice-leading bound, chord-safe bass riff rotation,
+ *  arpeggio chord-tone discipline, section macro-levels, the perfect-chain
+ *  pitch ladder, the player-riff FIFO, the generated saturation curve and
+ *  reverb impulse) unit-tested directly, and the full Sound class driven
+ *  through a simulated 600-command session against a fake AudioContext that
+ *  counts every node created/disconnected — proving the judgment tier is
+ *  audibly bigger than a plain correct, drops are earned at gates a TYPICAL
+ *  run reaches (x5 chain, streak 10 — measured against the real engine) and
+ *  land bar-aligned, countdown ticks ride the 16th grid and respect the
+ *  deadline, the kick pumps the sidechain bus, mute toggles can't fabricate
+ *  chain breaks, pause/resume re-arms the countdown, and an hour-scale
+ *  session leaks no nodes (the persistent pad stack + LFO excepted).
  *
  *  Run: node --test tests/audio.test.mjs
  */
@@ -44,6 +49,7 @@ const {
   Sound, nextGridTime, perfectPitch, pushRiff, PLAYER_RIFF_LEN, PENT,
   clampCatchUp, clockNudge, nextArrangement, kickStepsFor, bassRiffFor,
   saturationCurve, fillImpulse, DROP_BARS, DROP_COOLDOWN_BARS, INTRO_EXIT,
+  CHORDS, chordFor, arpDegree, sectionLevel,
 } = audio
 
 // ---------------------------------------------------------------------------
@@ -165,6 +171,23 @@ test('nextGridTime: first unsounded 16th at/after now, aligned to the horizon', 
   }
 })
 
+test('nextGridTime: requests BEYOND the horizon walk forward onto the grid '
+  + '(round-7 fix: countdown/anticipation ask past the 120ms lookahead)', () => {
+  const step = 0.125
+  // Horizon at 0.5, request at 1.0 (four steps past): exactly on a grid line.
+  assert.ok(Math.abs(nextGridTime(1.0, 0.5, step) - 1.0) < 1e-9)
+  // Request 1.03: next line is 1.125, NOT the raw 1.03 (the old bug).
+  assert.ok(Math.abs(nextGridTime(1.03, 0.5, step) - 1.125) < 1e-9)
+  for (let now = 0.5; now < 3; now += 0.031) {
+    const g = nextGridTime(now, 0.5, step)
+    assert.ok(g >= now - 1e-9, 'never in the past')
+    const k = (g - 0.5) / step
+    assert.ok(Math.abs(k - Math.round(k)) < 1e-6 || g === now,
+      `far-future request stays on the grid (now=${now} g=${g})`)
+    assert.ok(g - now <= step + 0.004, 'and never waits more than one 16th')
+  }
+})
+
 test('clampCatchUp: over a bar behind re-anchors to now; otherwise untouched', () => {
   const bar = 2.0
   assert.equal(clampCatchUp(5.0, 10.0, bar), 10.0, 'way behind: re-anchored')
@@ -266,12 +289,78 @@ test('bassRiffFor: AAAB/AABC rotation — variation lands at the phrase turns', 
   for (const bar of [0, 3, 7]) assert.equal(bassRiffFor(bar).length, 8, '8 8th-note slots')
 })
 
-test('drops are EARNED: chain x10 queues one; a plain correct does not', () => {
+// ---------------------------------------------------------------------------
+// round 7: real harmony — a progression with voice leading, not one cell
+// ---------------------------------------------------------------------------
+test('CHORDS: a real minor-key progression — at least 3 distinct roots over 8 bars', () => {
+  assert.equal(CHORDS.length, 8, 'one chord per bar over the 8-bar phrase')
+  const roots = new Set(CHORDS.map((c) => c.root))
+  assert.ok(roots.size >= 3, `harmonic movement needs >= 3 distinct roots, got ${roots.size}`)
+  assert.ok(roots.has(0), 'the tonic anchors the phrase')
+  const secondHalf = CHORDS.slice(4).map((c) => c.root).join(',')
+  const firstHalf = CHORDS.slice(0, 4).map((c) => c.root).join(',')
+  assert.notEqual(firstHalf, secondHalf, 'the back half turns — no photocopied phrase')
+})
+
+test('CHORDS: three-voice pads, led note-to-note (no voice leaps > 3 semitones)', () => {
+  for (const c of CHORDS) {
+    assert.equal(c.voices.length, 3, 'triadic voicing')
+    for (let v = 1; v < 3; v++) assert.ok(c.voices[v] > c.voices[v - 1], 'voices stacked upward')
+  }
+  for (let bar = 0; bar < CHORDS.length; bar++) {
+    const a = chordFor(bar).voices
+    const b = chordFor(bar + 1).voices
+    for (let v = 0; v < 3; v++) {
+      assert.ok(Math.abs(b[v] - a[v]) <= 3,
+        `voice ${v} moves ${Math.abs(b[v] - a[v])} semis at bar ${bar} — leading, not leaping`)
+    }
+  }
+})
+
+test('chordFor wraps; bass riff offsets stay chord-safe (root/fifth/octave family)', () => {
+  assert.deepEqual(chordFor(8), chordFor(0))
+  assert.deepEqual(chordFor(-1), chordFor(7))
+  const safe = new Set([0, 7, 12, 19])
+  for (const bar of [0, 3, 7]) {
+    for (const off of bassRiffFor(bar)) {
+      assert.ok(safe.has(off), `bass offset ${off} is consonant under every chord`)
+    }
+  }
+})
+
+test('arpDegree: cycles chord tones (up-down), lifts an octave on the back half', () => {
+  const c = chordFor(0)
+  const tones = new Set(c.voices.map((v) => v % 12))
+  for (let st = 0; st < 16; st++) {
+    assert.ok(tones.has(arpDegree(c, st) % 12), `step ${st} stays on chord tones`)
+  }
+  assert.equal(arpDegree(c, 4), arpDegree(c, 0) + 12, 'back-half octave lift')
+})
+
+test('sectionLevel: the macro-dynamic staircase — intro a murmur, drop a wall', () => {
+  assert.ok(sectionLevel('intro') < sectionLevel('groove'))
+  assert.ok(sectionLevel('groove') <= sectionLevel('build'))
+  assert.ok(sectionLevel('build') < sectionLevel('drop'))
+  assert.ok(sectionLevel('drop') / sectionLevel('intro') >= 2,
+    'at least 6dB of staged contrast between the bookends')
+})
+
+test('drops are EARNED at gates a typical run reaches: x5 chain and streak 10', () => {
   const a = startedSound()
-  a.s.correct(1, true, 9)
-  assert.equal(a.s.dropQueued, false, 'chain 9: not yet')
-  a.s.correct(1, true, 10)
-  assert.equal(a.s.dropQueued, true, 'chain 10: the track celebrates')
+  a.s.correct(1, true, 4)
+  assert.equal(a.s.dropQueued, false, 'chain 4: not yet')
+  a.s.correct(1, true, 5)
+  assert.equal(a.s.dropQueued, true, 'chain 5 (86% of typical runs): the track celebrates')
+
+  const b = startedSound()
+  b.s.correct(9, false, 0)
+  assert.equal(b.s.dropQueued, false, 'streak 9, no perfect: not yet')
+  b.s.correct(10, false, 0)
+  assert.equal(b.s.dropQueued, true, 'streak 10 (100% of typical runs): drop queued')
+
+  const c = startedSound()
+  c.s.correct(3, false, 0)
+  assert.equal(c.s.dropQueued, false, 'an ordinary correct never queues')
 })
 
 test('final-life clutch queues a drop; earlier lives do not', () => {
@@ -420,14 +509,31 @@ test('muted play still authors state: riff, stats and chain follow the engine', 
 
 test('pause cancels the countdown; resume re-arms it for the fresh window', () => {
   const a = startedSound()
-  a.s.say('TAP IT', 0, 1000)                         // long window: 6 countdown ticks
-  assert.ok(a.s.pending.length >= 6, 'countdown armed')
+  a.s.say('TAP IT', 0, 1000)                         // long window: countdown ticks
+  const armed = a.s.pending.length
+  assert.ok(armed >= 4, `countdown armed (${armed} grid-snapped ticks)`)
   a.s.pause()
   assert.equal(a.s.pending.length, 0, 'pause silences the ticking deadline')
   a.s.resume(1000)
-  assert.ok(a.s.pending.length >= 6, 'resume re-arms the countdown')
+  assert.ok(a.s.pending.length >= 4, 'resume re-arms the countdown')
+  const after = a.s.pending.length
   a.s.resume()                                       // resume with no live command
-  assert.ok(a.s.pending.length >= 6, 'no-window resume adds nothing new')
+  assert.equal(a.s.pending.length, after, 'no-window resume adds nothing new')
+})
+
+test('countdown ticks land ON the 16th grid and never past the deadline (round 7)', () => {
+  const a = startedSound()
+  const { s, ctx } = a
+  s.say('TAP IT', 0, 1200)
+  const stepDur = 60 / 96 / 4                        // intensity 0 → 96 BPM
+  const ticks = s.pending.filter((x) => x.startAt !== null)
+  assert.ok(ticks.length >= 4, `enough ticks to feel the deadline (${ticks.length})`)
+  for (const src of ticks) {
+    const phase = ((src.startAt - 0.06) % stepDur + stepDur) % stepDur
+    const off = Math.min(phase, stepDur - phase)
+    assert.ok(off < 0.004, `tick at ${src.startAt}s sits ${Math.round(off * 1000)}ms off the grid`)
+    assert.ok(src.startAt <= ctx.currentTime + 1.2 + 0.006, 'no tick after the deadline')
+  }
 })
 
 test('windowMsFor matches commands.nextCommand: scale AND additive gesture latency', () => {
@@ -605,11 +711,11 @@ test('600-command simulated session: zero node leaks, bounded state', () => {
   ctx.advance(8)
 
   const liveSources = ctx.sources.filter((x) => !x.ended)
-  assert.ok(liveSources.length <= 2,
-    `only the two persistent drones may live; found ${liveSources.length}`)
+  assert.ok(liveSources.length <= 7,
+    `only the persistent pad stack (6 saws) + filter LFO may live; found ${liveSources.length}`)
   const liveNodes = ctx.created - ctx.disconnected
-  assert.ok(liveNodes <= 14,
-    `persistent bus/reverb/drone graph only; ${liveNodes} nodes still connected`)
+  assert.ok(liveNodes <= 26,
+    `persistent bus/reverb/pad graph only; ${liveNodes} nodes still connected`)
   assert.equal(s.pending.length, 0, 'no orphaned cancellable one-shots')
   assert.ok(s.playerRiff.length <= PLAYER_RIFF_LEN, 'riff buffer bounded')
   s.stop()

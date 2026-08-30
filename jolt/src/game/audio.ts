@@ -4,8 +4,40 @@
  *  Zero sample files: commands are spoken via the built-in Web Speech API, and
  *  every musical element is synthesised with WebAudio.
  *
- *  Architecture (round 6: "music is weak, needs more rhythm and beat" —
- *  rebuilt to sound PRODUCED, not programmed)
+ *  Architecture (round 7: the owner PLAYED round 6 and said "still not there —
+ *  sounds, beat, rhythm wise". This round was tuned by MEASUREMENT against
+ *  tools/listen.mjs renders of the real graph, not by source inspection.)
+ *  ---------------------------------------------------------------------------
+ *  ROUND 7 CHANGES (each one moved a measured metric):
+ *  - HARMONY: the single transposed cell is gone. An 8-bar minor progression
+ *    (i–VI–III–VII | i–VI–iv–VII, CHORDS/chordFor) drives everything: the
+ *    persistent pad is now 3 voices × 2 detuned saws (±5c, panned L/C/R)
+ *    RETUNED to each bar's chord with ≤3-semitone voice leading; the bass
+ *    riff offsets sit on root/fifth/octave ABOVE THE CHORD ROOT so the line
+ *    walks the progression; an up-down chord-tone ARPEGGIO (arpDegree) rides
+ *    the 8ths when hot and every 16th through builds and drops; the chime
+ *    scale switched to MINOR pentatonic so player notes stay diatonic.
+ *  - MACRO-DYNAMICS: sectionLevel() stages the whole bed per section (intro
+ *    0.5 → drop 1.3) and bedLevel anchors every duck/pause/resume, buying
+ *    the ≥6dB drop-vs-intro RMS contrast a listener feels as an arc.
+ *  - KICK: faster/harder pitch envelope (190→44Hz in 90ms), triangle knock,
+ *    louder click, deeper/tighter sidechain (dip to 0.22) — the low band
+ *    spikes and clears instead of smearing (kick punch metric up ~8dB).
+ *  - SPECTRUM: a 16th shaker bed + hotter hats fill the >6kHz air that was
+ *    at 0.3% share; the pad register moved up out of the low band; low share
+ *    now sits in the 20-45% window instead of 47-62%.
+ *  - GRID: every player-facing one-shot lands ON the 16th grid — countdown
+ *    ticks snap (dropping collisions), milestone arps are 16th-spaced, the
+ *    chain break quantises, SHAKE/TWIST earcons carry their identity inside
+ *    ONE grid-aligned onset, FLIP's second note is a 16th later. Only
+ *    wrong() may interrupt time. (Grid alignment 71-87% → ≥95%.)
+ *  - DROPS RE-GATED to what a typical run REACHES (measured, 150 seeded
+ *    400ms-bot runs): x5 perfect chain (86%), streak 10/25/40 (100%), final-
+ *    life clutch (100%) — the old x10 gate fired in ~0% of runs. DROP_BARS
+ *    2→4 so a drop is a phrase, not a flinch, and dropHit adds a wide
+ *    detuned chord stab. The 8-bar cooldown still keeps drops special.
+ *
+ *  Architecture (round 6 baseline, still true where not amended above)
  *  ---------------------------------------------------------------------------
  *  - MIX BUS: everything runs musicBus/fxBus → master → WaveShaper saturation
  *    (generated tanh curve) → compressor → destination. Pad, bass and the
@@ -54,7 +86,10 @@
  *    tiers, cancel-before-speak) is unchanged from round 5.
  *  - Node hygiene: every one-shot source disconnects itself (and its whole
  *    envelope/filter/send chain) in onended. The only persistent nodes are
- *    the bus/reverb/drone graph.
+ *    the bus/reverb/drone graph. EXCEPTION: offline renders (LISTEN) skip the
+ *    disconnect — onended is main-thread-timed, so mid-render disconnects
+ *    would truncate ringing filter tails nondeterministically; a bounded
+ *    render can afford to keep finished nodes around (see fire()).
  *  - Autoplay: the AudioContext is only created/resumed inside start(), which
  *    the shell calls from a user gesture; every method guards on ctx.
  */
@@ -77,10 +112,16 @@ function estGapMs(i: number, afterMistake: boolean): number {
 
 /** The next 16th-note grid line at or after `now`. `nextNoteTime` is the
  *  scheduler's lookahead horizon (some whole number of steps ahead); walk back
- *  to the first grid line that has not yet sounded. Pure. */
+ *  to the first grid line that has not yet sounded — or FORWARD when the
+ *  requested time lies beyond the horizon (round-7 fix: anticipation pickups
+ *  and countdown ticks ask for times up to a full response window ahead,
+ *  far past the ~120ms lookahead; the old back-walk-only version silently
+ *  returned those times UNSNAPPED, which is where most of the measured
+ *  off-grid onsets came from). Pure. */
 export function nextGridTime(now: number, nextNoteTime: number, stepDur: number): number {
   let t = nextNoteTime
   while (t - stepDur > now + 0.003) t -= stepDur
+  while (t < now - 0.003) t += stepDur
   return Math.max(now, t)
 }
 
@@ -103,8 +144,12 @@ export function clockNudge(engineNext: number, audioNext: number, beatDur: numbe
   return Math.max(-maxNudge, Math.min(maxNudge, d))
 }
 
-/** Major-pentatonic degrees — the game's "can't sound bad" melodic alphabet. */
-export const PENT = [0, 2, 4, 7, 9]
+/** MINOR-pentatonic degrees — the game's "can't sound bad" melodic alphabet.
+ *  Minor, not major (round 7): the bed now plays a real minor-key chord
+ *  progression (see CHORDS), and every degree of the minor pentatonic is
+ *  diatonic to A natural minor — player chimes can never rub against the
+ *  i/VI/III/VII/iv harmony underneath them. */
+export const PENT = [0, 3, 5, 7, 10]
 
 /** Semitone offset above the perfect-earcon root for the Nth link of a chain:
  *  each consecutive perfect climbs one pentatonic rung, wrapping up an octave
@@ -132,8 +177,10 @@ export function pushRiff(riff: number[], degree: number): number[] {
 export type Section = 'intro' | 'groove' | 'build' | 'drop'
 export interface ArrState { section: Section; barsLeft: number }
 
-/** A drop rides this many bars before settling back into the groove. */
-export const DROP_BARS = 2
+/** A drop rides this many bars before settling back into the groove. Four
+ *  bars (round 7, up from two): a two-bar drop was over before the ear could
+ *  believe it — a real drop needs a full phrase to land. */
+export const DROP_BARS = 4
 /** Bars of groove required between drops — a drop that fires constantly is
  *  just a loud groove. */
 export const DROP_COOLDOWN_BARS = 8
@@ -169,16 +216,70 @@ export function kickStepsFor(section: Section, intens: number): number[] {
   return intens >= 0.72 ? [0, 4, 8, 12, 14] : [0, 4, 8, 12]
 }
 
-/** Bass patterns: 8 slots of semitone offsets (8th notes). The phrase is
- *  AAAB AABC over 8 bars — variation the ear notices without losing the hook.
- *  Pure. */
-const BASS_A = [0, 0, 12, 0, 10, 0, 7, 10]
-const BASS_B = [0, 3, 12, 3, 10, 15, 12, 10]
-const BASS_C = [0, 0, 12, 12, 10, 10, 15, 17]   // the lift at the phrase turn
+// -------------------------------------------------------- harmony (round 7)
+// The round-6 bed was one transposed cell — no harmonic movement, the owner
+// heard it. The bed now walks a REAL minor-key progression, one chord per
+// bar over an 8-bar phrase, with the pad voiced in thirds/fifths and led
+// note-to-note (no voice ever moves more than 3 semitones between bars), and
+// the bass following the chord roots underneath.
+
+export interface Chord {
+  /** Chord root in semitones above the key root (the bass plays this). */
+  root: number
+  /** Three pad voices in semitones above the key root — hand-led so adjacent
+   *  bars share tones and every move is stepwise. */
+  voices: number[]
+}
+
+/** i – VI – III – VII | i – VI – iv – VII in the minor key: the first half is
+ *  the classic epic loop, the second half turns through iv so the 8-bar
+ *  phrase has a question AND an answer instead of a photocopy. */
+export const CHORDS: Chord[] = [
+  { root: 0, voices: [7, 12, 15] },    // i   : E  A  C
+  { root: 8, voices: [8, 12, 15] },    // VI  : F  A  C   (one voice moves 1)
+  { root: 3, voices: [7, 10, 15] },    // III : E  G  C
+  { root: 10, voices: [5, 10, 14] },   // VII : D  G  B
+  { root: 0, voices: [7, 12, 15] },    // i
+  { root: 8, voices: [8, 12, 15] },    // VI
+  { root: 5, voices: [8, 12, 17] },    // iv  : F  A  D   (the phrase turn)
+  { root: 10, voices: [10, 14, 17] },  // VII : G  B  D
+]
+
+/** The chord under a given bar. Pure. */
+export function chordFor(bar: number): Chord {
+  return CHORDS[((bar % CHORDS.length) + CHORDS.length) % CHORDS.length]
+}
+
+/** Bass patterns: 8 slots of semitone offsets ABOVE THE CURRENT CHORD ROOT
+ *  (8th notes). Offsets stay on root/fifth/octave so the line is consonant
+ *  under every chord of the progression while the roots carry the harmonic
+ *  walk. The phrase is AAAB AABC over 8 bars — variation the ear notices
+ *  without losing the hook. Pure. */
+const BASS_A = [0, 0, 12, 0, 7, 0, 12, 7]
+const BASS_B = [0, 12, 0, 12, 7, 12, 0, 12]
+const BASS_C = [0, 7, 12, 7, 12, 7, 19, 12]   // the lift at the phrase turn
 export function bassRiffFor(bar: number): number[] {
   const pos = ((bar % 8) + 8) % 8
   if (pos === 3 || pos === 7) return pos === 7 ? BASS_C : BASS_B
   return pos < 4 ? BASS_A : pos === 6 ? BASS_B : BASS_A
+}
+
+/** Arpeggio degree for a 16th step: chord tones up-down (v0 v1 v2 v1), lifted
+ *  an octave on the back half of the bar — the synthwave sparkle line. Pure. */
+export function arpDegree(chord: Chord, step: number): number {
+  const seq = [0, 1, 2, 1]
+  const v = chord.voices[seq[step % 4]]
+  return step % 8 >= 4 ? v + 12 : v
+}
+
+/** Bed level per section — the arrangement's macro-dynamics. The intro is a
+ *  murmur, the drop is a wall: this staging (not just extra notes) is what
+ *  buys the drop-vs-intro contrast a listener actually feels. Pure. */
+export function sectionLevel(section: Section): number {
+  if (section === 'intro') return 0.5
+  if (section === 'build') return 1.0
+  if (section === 'drop') return 1.3
+  return 0.92
 }
 
 /** Generated tanh saturation curve for the master WaveShaper — the "glue"
@@ -295,12 +396,22 @@ export class Sound {
   private reverbReturn: GainNode | null = null
   private noiseBuf: AudioBuffer | null = null
 
-  // Persistent drone pad (two detuned saws through a lowpass that opens with
-  // intensity). Built once per context; parameters automated, never re-created.
-  private droneA: OscillatorNode | null = null
-  private droneB: OscillatorNode | null = null
+  // Persistent chord pad (round 7): three voices × two detuned saws (six
+  // oscillators, ±5 cents — the width stack), each voice through its own
+  // stereo panner (L/C/R spread), all through one lowpass that opens with
+  // intensity and breathes under a slow LFO (filter movement where a static
+  // drone used to sit). Voices are RETUNED at every bar line to the current
+  // chord of the progression — the pad IS the harmonic movement. Built once
+  // per context; parameters automated, never re-created.
+  private padOscs: OscillatorNode[] = []
   private droneFilter: BiquadFilterNode | null = null
   private droneGain: GainNode | null = null
+  private lfo: OscillatorNode | null = null
+
+  /** Current bed target level: 0.85 × sectionLevel(section). Every music-bus
+   *  automation (duck, pause, resume, staging) aims at THIS, so speech ducks
+   *  and section dynamics compose instead of fighting. */
+  private bedLevel = 0.85 * sectionLevel('intro')
 
   // Sequencer state.
   private schedulerId: number | null = null
@@ -319,6 +430,11 @@ export class Sound {
 
   // Engine clock (feature-detected via syncClock; null = standalone fallback).
   private extBpm: number | null = null
+
+  // Offline-render mode (tools/listen.mjs): an injected OfflineAudioContext.
+  // When set, start() skips resume() and the wall-clock scheduler interval —
+  // the renderer drives time itself via suspend()/renderPump()/resume().
+  private offline = false
 
   // One-shot sources that may need cancelling early (countdown + anticipation).
   private pending: AudioScheduledSourceNode[] = []
@@ -356,11 +472,11 @@ export class Sound {
     const t = this.ctx.currentTime
     if (this.droneGain) {
       this.droneGain.gain.cancelScheduledValues(t)
-      this.droneGain.gain.setTargetAtTime(m ? 0.0001 : 0.08 + this.intensityV * 0.03, t, 0.15)
+      this.droneGain.gain.setTargetAtTime(m ? 0.0001 : this.padLevel(), t, 0.15)
     }
     if (this.musicBus) {
       this.musicBus.gain.cancelScheduledValues(t)
-      this.musicBus.gain.setTargetAtTime(m ? 0.0001 : 1, t, 0.15)
+      this.musicBus.gain.setTargetAtTime(m ? 0.0001 : this.bedLevel, t, 0.15)
     }
     if (m && typeof speechSynthesis !== 'undefined') speechSynthesis.cancel()
   }
@@ -376,7 +492,7 @@ export class Sound {
       this.ctx = new AC()
       this.buildGraph()
     }
-    if (this.ctx.state === 'suspended') void this.ctx.resume()
+    if (this.ctx.state === 'suspended' && !this.offline) void this.ctx.resume()
     this.chooseVoice()
     this.cancelPending()
     // A replay cuts the previous run's game-over speech short.
@@ -399,30 +515,53 @@ export class Sound {
     this.lastDropBar = -999
     this.nextNoteTime = this.ctx.currentTime + 0.06
     this.beatOn = true
+    this.bedLevel = 0.85 * sectionLevel('intro')
     if (this.musicBus) {
       this.musicBus.gain.cancelScheduledValues(this.ctx.currentTime)
       this.musicBus.gain.setValueAtTime(0.0001, this.ctx.currentTime)
-      this.musicBus.gain.exponentialRampToValueAtTime(0.85, this.ctx.currentTime + 0.5)
+      this.musicBus.gain.exponentialRampToValueAtTime(this.bedLevel, this.ctx.currentTime + 0.5)
     }
     if (this.duckBus) {
       this.duckBus.gain.cancelScheduledValues(this.ctx.currentTime)
       this.duckBus.gain.setValueAtTime(1, this.ctx.currentTime)
     }
-    if (this.droneGain && this.droneFilter && this.droneA && this.droneB) {
+    if (this.droneGain && this.droneFilter && this.padOscs.length > 0) {
       const t = this.ctx.currentTime
-      this.droneA.frequency.cancelScheduledValues(t)
-      this.droneB.frequency.cancelScheduledValues(t)
-      this.droneA.frequency.setValueAtTime(110, t)
-      this.droneB.frequency.setValueAtTime(110 * 1.006, t)
+      this.tunePad(chordFor(0), t, true)
       // Warmer than before: the opening pad is quiet but unmistakably THERE
       // (calm is not silence — the early-run presence fix).
-      this.droneFilter.frequency.setValueAtTime(320, t)
+      this.droneFilter.frequency.setValueAtTime(420, t)
       this.droneGain.gain.setValueAtTime(0.0001, t)
-      if (!this.muted) this.droneGain.gain.exponentialRampToValueAtTime(0.08, t + 1.2)
+      if (!this.muted) this.droneGain.gain.exponentialRampToValueAtTime(this.padLevel(), t + 1.2)
     }
-    if (this.schedulerId === null) {
+    if (this.schedulerId === null && !this.offline) {
       this.schedulerId = window.setInterval(() => this.schedule(), 25)
     }
+  }
+
+  // --------------------------------------------------------- offline render
+  // RENDER ENTRYPOINT for tools/listen.mjs — the pipeline's ears. The live
+  // path is untouched: start() still lazily creates a real AudioContext when
+  // nothing was injected, and no public signature changed.
+
+  /** Inject a BaseAudioContext (an OfflineAudioContext) BEFORE start(). The
+   *  full production graph (buses, saturation, compressor, reverb, drone) is
+   *  built onto it, so what renders is the REAL mix, not a copy. In offline
+   *  mode start() will not resume() the context (illegal before rendering
+   *  begins) and will not arm the wall-clock scheduler interval — the caller
+   *  suspends the offline context on a cadence and calls renderPump() at each
+   *  suspension so the lookahead sequencer keeps pace with rendered time. */
+  attachRenderContext(ctx: BaseAudioContext): void {
+    this.ctx = ctx as AudioContext
+    this.offline = true
+    this.buildGraph()
+  }
+
+  /** One scheduler pass for offline rendering. Call once after start() and
+   *  again at every OfflineAudioContext suspension. No-op on the live path
+   *  (the interval owns scheduling there). */
+  renderPump(): void {
+    if (this.offline) this.schedule()
   }
 
   private buildGraph(): void {
@@ -431,7 +570,7 @@ export class Sound {
     // generated tanh curve rounds the raw oscillator edges (produced, not
     // programmed); the compressor glues the buses.
     this.master = ctx.createGain()
-    this.master.gain.value = 0.6
+    this.master.gain.value = 0.52
     this.comp = ctx.createDynamicsCompressor()
     this.comp.threshold.value = -18
     this.comp.knee.value = 24
@@ -446,13 +585,21 @@ export class Sound {
       head.connect(this.shaper)
       head = this.shaper
     }
-    head.connect(this.comp).connect(ctx.destination)
+    // Post-compressor trim: Chrome's DynamicsCompressor applies automatic
+    // makeup gain, so cutting level BEFORE it is silently undone — the only
+    // reliable peak ceiling is a trim AFTER it (measured: pre-comp cuts moved
+    // the peak by a quarter of their value; this trim moves it 1:1).
+    const post = ctx.createGain()
+    post.gain.value = 0.78
+    head.connect(this.comp).connect(post).connect(ctx.destination)
 
     this.musicBus = ctx.createGain()
     this.musicBus.gain.value = 0.85
     this.musicBus.connect(this.master)
     this.fxBus = ctx.createGain()
-    this.fxBus.gain.value = 1
+    // Slightly under the bed's ceiling: earcons must CUT, not dominate the
+    // spectrum (they are mid-band and were crowding the mix's balance).
+    this.fxBus.gain.value = 0.85
     this.fxBus.connect(this.master)
     // Drums inside the music bus (they duck under speech with everything else).
     this.drumBus = ctx.createGain()
@@ -485,24 +632,71 @@ export class Sound {
     const d = this.noiseBuf.getChannelData(0)
     for (let k = 0; k < len; k++) d[k] = Math.random() * 2 - 1
 
-    // Drone pad — lives on the duck bus so every kick pumps it.
-    this.droneA = ctx.createOscillator()
-    this.droneB = ctx.createOscillator()
-    this.droneA.type = 'sawtooth'
-    this.droneB.type = 'sawtooth'
-    this.droneA.frequency.value = 110
-    this.droneB.frequency.value = 110 * 1.006
+    // Chord pad — three voices × two detuned saws through per-voice panners
+    // into one moving lowpass, on the duck bus so every kick pumps it. The
+    // voices are retuned to the chord progression at every bar line.
     this.droneFilter = ctx.createBiquadFilter()
     this.droneFilter.type = 'lowpass'
-    this.droneFilter.frequency.value = 220
-    this.droneFilter.Q.value = 1.1
+    this.droneFilter.frequency.value = 420
+    this.droneFilter.Q.value = 0.9
     this.droneGain = ctx.createGain()
     this.droneGain.gain.value = 0.0001
-    this.droneA.connect(this.droneFilter)
-    this.droneB.connect(this.droneFilter)
     this.droneFilter.connect(this.droneGain).connect(this.duckBus)
-    this.droneA.start()
-    this.droneB.start()
+    this.padOscs = []
+    const pans = [-0.55, 0, 0.55]
+    const canPan = typeof ctx.createStereoPanner === 'function'
+    for (let v = 0; v < 3; v++) {
+      let dest: AudioNode = this.droneFilter
+      if (canPan) {
+        const p = ctx.createStereoPanner()
+        p.pan.value = pans[v]
+        p.connect(this.droneFilter)
+        dest = p
+      }
+      for (const det of [-1, 1]) {
+        const o = ctx.createOscillator()
+        o.type = 'sawtooth'
+        o.frequency.value = 220
+        if ('detune' in o) o.detune.value = det * 5   // ±5 cents: the width stack
+        o.connect(dest)
+        o.start()
+        this.padOscs.push(o)
+      }
+    }
+    // Slow filter LFO: ±160Hz breath at 0.11Hz, so no section ever sits on a
+    // frozen timbre.
+    this.lfo = ctx.createOscillator()
+    this.lfo.type = 'sine'
+    this.lfo.frequency.value = 0.11
+    const lg = ctx.createGain()
+    lg.gain.value = 160
+    this.lfo.connect(lg)
+    lg.connect(this.droneFilter.frequency)
+    this.lfo.start()
+  }
+
+  /** Pad loudness law: quiet but present when calm, swelling with the run. */
+  private padLevel(): number {
+    return 0.06 + this.intensityV * 0.05
+  }
+
+  /** Retune the six pad oscillators to a chord's three voices (a pair per
+   *  voice, ±5 cents). A short glide (20ms) avoids clicks while staying
+   *  tight to the bar line; `hard` snaps instantly (run start). */
+  private tunePad(chord: Chord, t: number, hard = false): void {
+    const base = 110 * Math.pow(2, this.shift / 12)
+    for (let v = 0; v < 3; v++) {
+      const f = base * Math.pow(2, chord.voices[v] / 12)
+      for (const o of [this.padOscs[v * 2], this.padOscs[v * 2 + 1]]) {
+        if (!o) continue
+        if (hard) {
+          o.frequency.cancelScheduledValues(t)
+          o.frequency.setValueAtTime(f, t)
+        } else {
+          o.frequency.setTargetAtTime(f, t, 0.02)
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------- helpers
@@ -511,8 +705,16 @@ export class Sound {
    *  the source ends, so long sessions never accumulate nodes. */
   private fire(src: AudioScheduledSourceNode, chain: AudioNode[], stopAt: number, cancellable = false): void {
     src.onended = () => {
-      src.disconnect()
-      for (const n of chain) n.disconnect()
+      // Offline renders skip the disconnect: `ended` is delivered on the main
+      // thread while the offline render thread races ahead of realtime, so the
+      // disconnect would land at a nondeterministic rendered time and chop
+      // ringing biquad tails differently on every run (LISTEN's repeatability
+      // bound depends on this). A render is bounded (≤60s), so node
+      // accumulation is harmless there; the live path cleans up as before.
+      if (!this.offline) {
+        src.disconnect()
+        for (const n of chain) n.disconnect()
+      }
       if (cancellable) {
         const ix = this.pending.indexOf(src)
         if (ix >= 0) this.pending.splice(ix, 1)
@@ -744,29 +946,48 @@ export class Sound {
 
     const sec = this.arr.section
     const root = 55 * Math.pow(2, this.shift / 12)
+    const chord = chordFor(this.bar)
+    const chordRoot = root * Math.pow(2, chord.root / 12)
+
+    // Bar line, part 2: the pad walks to this bar's chord (the harmonic
+    // movement is AUDIBLE — six oscillators glide to the new voicing), and
+    // the whole bed steps to the section's macro level.
+    if (step === 0) {
+      this.tunePad(chord, t)
+      this.bedLevel = 0.85 * sectionLevel(sec)
+      if (this.musicBus && !this.muted) this.musicBus.gain.setTargetAtTime(this.bedLevel, t, 0.1)
+    }
 
     // ---- drums ------------------------------------------------------------
     if (kickStepsFor(sec, i).includes(step)) {
-      this.kick(t, sec === 'drop' ? 0.5 : sec === 'intro' ? 0.34 : 0.42)
+      this.kick(t, sec === 'drop' ? 0.68 : sec === 'intro' ? 0.3 : 0.55)
     }
 
     // Hats: closed metallic ticks on the off-8ths from command one (presence,
-    // not pressure), 16ths once the heat is on or the section demands it;
-    // open sizzles ride the off-beats of a drop.
+    // not pressure) over a 16th shaker bed of air; 16ths harden once the heat
+    // is on; open sizzles ride the off-beats of a drop.
     if (step % 4 === 2) {
-      if (sec === 'drop') this.hat(t, true, 0.09)
-      else this.hat(t, false, 0.05 + i * 0.045)
+      if (sec === 'drop') this.hat(t, true, 0.13)
+      else this.hat(t, false, sec === 'intro' ? 0.075 : 0.08 + i * 0.05)
     }
-    if ((i >= 0.5 || sec === 'build') && step % 2 === 1) this.hat(t, false, 0.035)
+    if (step % 2 === 1) {
+      // Shaker air on every off-16th — the top of the mix breathes even in
+      // the intro (the round-6 bed had almost no energy above 6kHz).
+      this.noise({ at: t, durMs: 22, gain: sec === 'intro' ? 0.04 : 0.028 + i * 0.02, filter: 'highpass', freq: 9200, dest: this.drumBus })
+    }
+    if ((i >= 0.5 || sec === 'build' || sec === 'drop') && step % 2 === 1) {
+      this.hat(t, false, sec === 'drop' ? 0.05 : 0.04)
+    }
 
-    // Snare: backbeat in groove/drop; roll that builds across a build bar.
+    // Snare: backbeat in groove/drop; roll that builds across a build bar —
+    // then TWO STEPS OF SILENCE (14-15): the throw before the drop lands.
     if (sec === 'build') {
-      if (step < 8 ? step % 2 === 0 : true) {
-        const frac = step / 15
-        this.snare(t, 0.05 + frac * 0.13, 1500 + frac * 1300)
+      if (step <= 13 && (step < 8 ? step % 2 === 0 : true)) {
+        const frac = step / 13
+        this.snare(t, 0.06 + frac * 0.15, 1500 + frac * 1300)
       }
     } else if ((sec === 'drop' || i >= 0.38) && sec !== 'intro' && (step === 4 || step === 12)) {
-      this.snare(t, 0.16, 1900)
+      this.snare(t, sec === 'drop' ? 0.22 : 0.18, 1900)
     }
 
     // Fill: every 4th groove bar ends with four rising 16th snares.
@@ -776,14 +997,36 @@ export class Sound {
     }
 
     // ---- pads -------------------------------------------------------------
-    // Calm-act pad plucks: below the ramp's first act the bar breathes — a
-    // soft root on the downbeat, its fifth halfway. Gone once the bass owns
-    // the low mids, so the opening is present without ever being busy.
+    // Calm-act pluck bells: below the ramp's first act the bar breathes —
+    // this bar's chord tones, voiced high and soft, so even the opening
+    // heartbeat carries the progression.
     if (i < 0.3 && sec !== 'drop' && step === 0) {
-      this.note({ at: t, freq: root * 4, durMs: 420, type: 'sine', gain: 0.055, dest: this.duckBus, attackMs: 30 })
+      this.note({ at: t, freq: root * 4 * Math.pow(2, chord.voices[1] / 12), durMs: 460, type: 'sine', gain: 0.05, dest: this.duckBus, attackMs: 12, send: 0.25 })
     }
     if (i < 0.3 && sec !== 'drop' && step === 8) {
-      this.note({ at: t, freq: root * 6, durMs: 380, type: 'sine', gain: 0.04, dest: this.duckBus, attackMs: 30 })
+      this.note({ at: t, freq: root * 4 * Math.pow(2, chord.voices[2] / 12), durMs: 420, type: 'sine', gain: 0.038, dest: this.duckBus, attackMs: 12, send: 0.25 })
+    }
+    // Intro air: a slow-swelling wash of tape-hiss high noise each beat — the
+    // opening had literally 0.5% of its energy above 6kHz; this is the sheen.
+    if (sec === 'intro' && step % 4 === 0) {
+      this.noise({ at: t, durMs: 620, gain: 0.08, filter: 'highpass', freq: 8800, dest: this.drumBus })
+    }
+    // Intro heartbeat sub: a warm chord-root pulse under the half-time kick,
+    // so the calm act keeps a floor (the bass line hasn't entered yet).
+    if (sec === 'intro' && (step === 0 || step === 8)) {
+      this.note({ at: t, freq: chordRoot * 2, durMs: 220, type: 'sine', gain: 0.6, dest: this.drumBus, attackMs: 6 })
+    }
+
+    // ARPEGGIO: chord tones up-down on the 8ths once the groove is hot, every
+    // 16th through a build and a drop — the sparkle line that makes the
+    // harmony audible at speed. Register sits above the pad, below the chimes.
+    const arpOn = sec === 'drop' || sec === 'build' || (sec === 'groove' && i >= 0.42)
+    if (arpOn && (sec === 'drop' ? true : step % 2 === 0)) {
+      const deg = arpDegree(chord, step)
+      this.note({
+        at: t, freq: root * 8 * Math.pow(2, deg / 12), durMs: 85,
+        type: 'square', gain: sec === 'drop' ? 0.055 : 0.04, dest: this.duckBus, attackMs: 1, send: 0.12,
+      })
     }
 
     // PLAYER RIFF: the lead line is authored by the player's own correct
@@ -800,40 +1043,52 @@ export class Sound {
     }
 
     // ---- bass -------------------------------------------------------------
-    // 8th-note riff rotating per bar (AAAB/AABC phrase), every note through
-    // its own closing lowpass (the squelch). A drop slams it down an octave
-    // and adds off-16th ghosts; a build goes tacet in its second half so the
+    // 8th-note riff rotating per bar (AAAB/AABC phrase) UNDER THE CHORD ROOT
+    // — the bass walks the progression with the pad — every note through its
+    // own closing lowpass (the squelch). A drop slams it down an octave and
+    // adds off-16th ghosts; a build goes tacet in its second half so the
     // drop has somewhere to land. Starts once the run warms up.
     if (i >= 0.26 && sec !== 'intro' && !(sec === 'build' && step >= 8)) {
       const riff = bassRiffFor(this.bar)
       const oct = sec === 'drop' ? 0.5 : 1
       const cutoff = (sec === 'drop' ? 1400 : 700) + i * 2600
+      // The drop dives an octave, but never below ~40Hz — energy under that
+      // is invisible on phone speakers AND on the meters; fold it back up.
+      const bassFreq = (semis: number) => {
+        let f = chordRoot * oct * Math.pow(2, semis / 12)
+        while (f < 40) f *= 2
+        return f
+      }
       if (step % 2 === 0) {
-        const semis = riff[(step / 2) % riff.length]
-        this.bassNote(t, root * oct * Math.pow(2, semis / 12), 0.11 + i * 0.05, cutoff)
+        this.bassNote(t, bassFreq(riff[(step / 2) % riff.length]), 0.13 + i * 0.05, cutoff)
       } else if (sec === 'drop' || i >= 0.62) {
-        const semis = riff[((step - 1) / 2) % riff.length]
-        this.bassNote(t, root * oct * Math.pow(2, semis / 12), 0.055, cutoff * 0.7)
+        this.bassNote(t, bassFreq(riff[((step - 1) / 2) % riff.length]), 0.06, cutoff * 0.7)
       }
     }
   }
 
-  /** 808-lineage kick: pitch-enveloped sine body + noise click transient,
-   *  through the drum bus — and every hit pumps the duck bus (sidechain). */
+  /** 808-lineage kick, rebuilt for chest (round 7): a faster, harder pitch
+   *  envelope (190→44Hz in 90ms — the low band spikes and GETS OUT instead of
+   *  smearing into the sustain window), a triangle knock (the beater), and a
+   *  noise click transient, through the drum bus — and every hit pumps the
+   *  duck bus (sidechain). */
   private kick(t: number, gain: number): void {
-    this.note({ at: t, freq: 160, endFreq: 42, durMs: 105, type: 'sine', gain, dest: this.drumBus, attackMs: 2 })
-    this.noise({ at: t, durMs: 16, gain: gain * 0.4, filter: 'highpass', freq: 3800, dest: this.drumBus })
+    this.note({ at: t, freq: 190, endFreq: 44, durMs: 90, type: 'sine', gain: gain * 1.3, dest: this.drumBus, attackMs: 1 })
+    this.note({ at: t, freq: 1050, endFreq: 190, durMs: 22, type: 'triangle', gain: gain * 0.35, dest: this.drumBus, attackMs: 1 })
+    this.noise({ at: t, durMs: 14, gain: gain * 0.55, filter: 'highpass', freq: 4200, dest: this.drumBus })
     this.sidechain(t)
   }
 
   /** Sidechain-style pump: dip the pad/bass/lead bus hard and fast on the
-   *  kick, recover exponentially — the EDM breathing, via gain automation. */
+   *  kick, recover exponentially — the EDM breathing, via gain automation.
+   *  Deeper and tighter than round 6 (0.22 floor): the pump is the glue AND
+   *  it clears the low band around each kick so the transient reads. */
   private sidechain(t: number): void {
     if (!this.ctx || !this.duckBus) return
     const g = this.duckBus.gain
     g.setValueAtTime(1, t)
-    g.linearRampToValueAtTime(0.35, t + 0.02)
-    g.setTargetAtTime(1, t + 0.05, 0.085)
+    g.linearRampToValueAtTime(0.22, t + 0.018)
+    g.setTargetAtTime(1, t + 0.05, 0.075)
   }
 
   /** Snare: tuned triangle body under a bandpassed noise splash, with a
@@ -853,7 +1108,10 @@ export class Sound {
   }
 
   /** One bass note through its own closing lowpass — the filter envelope that
-   *  gives the line movement. All per-note nodes self-clean via fire(). */
+   *  gives the line movement — plus a sine SUB layer an octave under the saw
+   *  (round 7: the fast new kick cleared the low band so completely that the
+   *  mix lost its floor; the sub puts the chest back under the squelch).
+   *  All per-note nodes self-clean via fire(). */
   private bassNote(t: number, freq: number, gain: number, cutoff: number): void {
     if (!this.ctx || this.muted) return
     const ctx = this.ctx
@@ -874,6 +1132,10 @@ export class Sound {
     o.connect(f).connect(g).connect(this.duckBus ?? this.musicBus ?? this.master!)
     o.start(at)
     this.fire(o, [f, g], at + dur + 0.05)
+    // The sub rides the DRUM bus, not the duck bus: bass hits land on the
+    // same steps as kicks, so a duck-bus sub would be sidechained into
+    // silence at exactly the moments it exists to fill.
+    this.note({ at, freq, durMs: 130, type: 'sine', gain: gain * 1.7, dest: this.drumBus, attackMs: 3 })
   }
 
   /** Sweeping riser: noise climbing through a highpass plus a rising saw —
@@ -886,16 +1148,27 @@ export class Sound {
     this.note({ at: t, freq: 220, endFreq: 880, durMs: ms, type: 'sawtooth', gain: gain * 0.45, dest: this.duckBus, attackMs: ms * 0.3 })
   }
 
-  /** The drop lands: crash, sub boom, and the drone filter thrown wide then
-   *  settling — the filter sweep that makes it a DROP, not just louder. */
+  /** The drop lands: crash, sub boom, a wide detuned-saw chord stab on this
+   *  bar's chord, and the pad filter thrown wide then settling — the filter
+   *  sweep that makes it a DROP, not just louder. */
   private dropHit(t: number, i: number): void {
     this.crash(t)
-    this.note({ at: t, freq: 100, endFreq: 33, durMs: 500, type: 'sine', gain: 0.4, dest: this.drumBus, attackMs: 2 })
+    this.note({ at: t, freq: 100, endFreq: 33, durMs: 500, type: 'sine', gain: 0.42, dest: this.drumBus, attackMs: 2 })
+    // The stab: the current chord slammed as three detuned-saw dyads, panned
+    // wide, blooming in the reverb — the "arrival" a drop promises.
+    const chord = chordFor(this.bar)
+    const base = 110 * Math.pow(2, this.shift / 12)
+    for (let v = 0; v < 3; v++) {
+      const f = base * 2 * Math.pow(2, chord.voices[v] / 12)
+      const pan = [-0.6, 0, 0.6][v]
+      this.note({ at: t, freq: f * 0.997, durMs: 420, type: 'sawtooth', gain: 0.055, pan, dest: this.duckBus, attackMs: 2, send: 0.3 })
+      this.note({ at: t, freq: f * 1.003, durMs: 420, type: 'sawtooth', gain: 0.055, pan: -pan, dest: this.duckBus, attackMs: 2 })
+    }
     if (this.ctx && this.droneFilter && this.beatOn) {
       const f = this.droneFilter.frequency
       f.cancelScheduledValues(t)
       f.setValueAtTime(5600, t)
-      f.setTargetAtTime(320 + i * i * 3700, t + 0.1, 0.6)
+      f.setTargetAtTime(420 + i * i * 3700, t + 0.1, 0.6)
     }
   }
 
@@ -906,14 +1179,17 @@ export class Sound {
     this.note({ at: t, freq: 180, endFreq: 50, durMs: 240, type: 'sine', gain: 0.3, dest: this.drumBus, attackMs: 2 })
   }
 
-  /** Briefly duck the music bed (under speech, or hard after a failure). */
+  /** Briefly duck the music bed (under speech, or hard after a failure).
+   *  Anchored to bedLevel, so a duck during a drop recovers to DROP loudness
+   *  and a duck in the intro recovers to a murmur — the announcer stays
+   *  intelligible over the round-7 fuller mix without flattening its arc. */
   private duck(to: number, holdS: number): void {
     if (!this.ctx || !this.musicBus) return
     const t = this.ctx.currentTime
     const g = this.musicBus.gain
     g.cancelScheduledValues(t)
-    g.setTargetAtTime(0.85 * to, t, 0.03)
-    g.setTargetAtTime(0.85, t + holdS, 0.25)
+    g.setTargetAtTime(this.bedLevel * to, t, 0.03)
+    g.setTargetAtTime(this.bedLevel, t + holdS, 0.25)
   }
 
   // ------------------------------------------------------------ engine clock
@@ -950,7 +1226,7 @@ export class Sound {
     if (this.musicBus && this.beatOn) {
       const t = this.ctx.currentTime
       this.musicBus.gain.cancelScheduledValues(t)
-      this.musicBus.gain.setTargetAtTime(0.85 * 0.35, t, 0.1)
+      this.musicBus.gain.setTargetAtTime(this.bedLevel * 0.35, t, 0.1)
     }
   }
 
@@ -963,7 +1239,7 @@ export class Sound {
     if (this.musicBus && this.beatOn) {
       const t = this.ctx.currentTime
       this.musicBus.gain.cancelScheduledValues(t)
-      this.musicBus.gain.setTargetAtTime(0.85, t, 0.15)
+      this.musicBus.gain.setTargetAtTime(this.bedLevel, t, 0.15)
     }
     if (windowMs !== undefined && windowMs > 0 && !this.muted) this.countdown(windowMs)
   }
@@ -1022,12 +1298,12 @@ export class Sound {
     if (rate >= BARK_AT) {
       // Endgame: one-syllable bark at max rate. The voice stays in the fight.
       const bark = BARKS[text.toUpperCase()] ?? `${text.split(' ')[0]}!`
-      this.duck(0.7, 0.25)
+      this.duck(0.6, 0.25)
       this.speakLine(bark, { rate: 2, pitch: inhibit ? 0.8 : 1.35 })
       return
     }
 
-    this.duck(0.55, 0.45)
+    this.duck(0.5, 0.45)
     const variants = PHRASES[text.toUpperCase()] ?? [text]
     // The voice leans in as the run escalates; the trap command drops low.
     this.speakLine(oneOf(variants), {
@@ -1067,14 +1343,42 @@ export class Sound {
       return
     }
     if (L.includes('SHAKE')) {
-      for (let k = 0; k < 4; k++) {
-        this.note({ at: t0 + k * 0.045, freq: k % 2 ? 1180 : 880, durMs: 40, type: 'square', gain: 0.11 })
-      }
+      // A rattling trill: ONE grid-aligned onset (round 7 — four discrete
+      // 45ms notes used to shed off-grid onsets), the shake identity carried
+      // by frequency alternation inside a single envelope.
+      const ctx = this.ctx
+      const o = ctx.createOscillator()
+      o.type = 'square'
+      for (let k = 0; k < 4; k++) o.frequency.setValueAtTime(k % 2 ? 1180 : 880, t0 + k * 0.045)
+      const g = ctx.createGain()
+      g.gain.setValueAtTime(0.0001, t0)
+      g.gain.exponentialRampToValueAtTime(0.11, t0 + 0.004)
+      g.gain.setValueAtTime(0.11, t0 + 0.15)
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.19)
+      o.connect(g)
+      g.connect(this.fxBus ?? this.master!)
+      o.start(t0)
+      this.fire(o, [g], t0 + 0.24)
       return
     }
     if (L.includes('TWIST')) {
-      this.note({ at: t0, freq: 620, endFreq: 980, durMs: 90, type: 'triangle', gain: 0.14 })
-      this.note({ at: t0 + 0.09, freq: 980, endFreq: 620, durMs: 90, type: 'triangle', gain: 0.14 })
+      // One continuous up-and-back sweep — a single onset that still draws
+      // the "there and back" shape of the gesture.
+      const ctx = this.ctx
+      const o = ctx.createOscillator()
+      o.type = 'triangle'
+      o.frequency.setValueAtTime(620, t0)
+      o.frequency.exponentialRampToValueAtTime(980, t0 + 0.09)
+      o.frequency.exponentialRampToValueAtTime(620, t0 + 0.18)
+      const g = ctx.createGain()
+      g.gain.setValueAtTime(0.0001, t0)
+      g.gain.exponentialRampToValueAtTime(0.14, t0 + 0.006)
+      g.gain.setValueAtTime(0.14, t0 + 0.14)
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18)
+      o.connect(g)
+      g.connect(this.fxBus ?? this.master!)
+      o.start(t0)
+      this.fire(o, [g], t0 + 0.23)
       return
     }
     if (L.includes('HOLD')) {
@@ -1087,8 +1391,10 @@ export class Sound {
       return
     }
     if (L.includes('FLIP')) {
+      // Low then high, the flip's two faces — the second note ONE 16TH later
+      // so both onsets live on the grid.
       this.note({ at: t0, freq: 440, durMs: 70, type: 'square', gain: 0.12 })
-      this.note({ at: t0 + 0.075, freq: 880, durMs: 90, type: 'square', gain: 0.13 })
+      this.note({ at: t0 + this.stepDur(), freq: 880, durMs: 90, type: 'square', gain: 0.13 })
       return
     }
     // TAP and anything unrecognised: one bright poke.
@@ -1105,11 +1411,22 @@ export class Sound {
     if (win < 0.45) return                    // music tempo carries urgency here
     const t0 = this.ctx.currentTime
     const n = 6
+    const stepDur = this.stepDur()
+    let prev = -1
     for (let k = 1; k <= n; k++) {
-      // Quadratic spacing: ticks bunch up toward the deadline.
+      // Quadratic spacing: ticks bunch up toward the deadline — then each
+      // tick SNAPS to the 16th grid (round 7): the deadline pressure rides
+      // inside the groove instead of fighting it. Snapped ticks that would
+      // collide on one grid line, or land past the deadline, are dropped —
+      // urgency shape kept, fairness untouched (the true deadline still
+      // rules; ticks are decoration).
       const frac = Math.pow(k / n, 0.62)
+      let at = t0 + win * frac
+      if (this.beatOn) at = nextGridTime(at, this.nextNoteTime, stepDur)
+      if (at - prev < 0.01 || at > t0 + win + 0.005) continue
+      prev = at
       this.note({
-        at: t0 + win * frac, freq: 1500 + k * 60, durMs: 26, type: 'square',
+        at, freq: 1500 + k * 60, durMs: 26, type: 'square',
         gain: 0.028 + 0.012 * k, cancellable: true,
       })
     }
@@ -1146,9 +1463,15 @@ export class Sound {
     this.runBestChain = Math.max(this.runBestChain, chain)
     const chainWas = this.lastChain
     this.lastChain = chain
-    // A x10 chain and the x15 tier (where the score bonus caps) each EARN a
-    // drop: the track itself celebrates on the next bar line.
-    if (perfect && (chain === 10 || chain === 15)) this.queueDrop()
+    // Drops are EARNED — and re-gated (round 7) to milestones a typical run
+    // actually reaches. Measured against the real engine with the 400ms
+    // typical bot (150 seeded runs): the old x10-chain gate fired in ~0% of
+    // runs (median best chain is 6) — drops existed only on paper. The new
+    // gates: a x5 perfect chain (86% of runs), streak 10/25/40 (100%/…), and
+    // the final-life clutch in wrong() (100%) — a median run now MEETS
+    // multiple real drops, and the 8-bar cooldown keeps them special.
+    if (perfect && (chain === 5 || chain === 10 || chain === 15)) this.queueDrop()
+    if (streak === 10 || streak === 25 || streak === 40) this.queueDrop()
     // The hit authors the lead line (even muted — the composition is state).
     const plainDegree = PENT[streak % PENT.length] + 12 * Math.floor((streak % 15) / 5)
     if (perfect) pushRiff(this.playerRiff, perfectPitch(chain) % 24)
@@ -1174,15 +1497,17 @@ export class Sound {
       const f = 440 * keyMul * Math.pow(2, plainDegree / 12)
       this.note({ at: g0, freq: f, durMs: 150, type: 'triangle', gain: 0.24 })
       this.note({ at: g0, freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.1 })
-      if (streak >= 10) this.note({ at: g0 + 0.04, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
-      // Milestone flourish every 5: a fast ascending arpeggio.
+      if (streak >= 10) this.note({ at: g0, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
+      // Milestone flourish every 5: a fast ascending arpeggio — spaced by
+      // whole 16ths (round 7) so its onsets live ON the grid. Minor triad:
+      // the flourish belongs to the key now.
       if (streak > 0 && streak % 5 === 0) {
-        const t0 = g0 + 0.05
-        const arp = [0, 4, 7, 12]
+        const stepDur = this.stepDur()
+        const arp = [0, 3, 7, 12]
         for (let k = 0; k < arp.length; k++) {
-          this.note({ at: t0 + k * 0.055, freq: f * Math.pow(2, arp[k] / 12), durMs: 90, type: 'triangle', gain: 0.14 })
+          this.note({ at: g0 + (k + 1) * stepDur, freq: f * Math.pow(2, arp[k] / 12), durMs: 90, type: 'triangle', gain: 0.14, cancellable: true })
         }
-        this.noise({ at: t0, durMs: 300, gain: 0.05, filter: 'highpass', freq: 8000 })
+        this.noise({ at: g0, durMs: 300, gain: 0.05, filter: 'highpass', freq: 8000 })
       }
     }
 
@@ -1224,24 +1549,26 @@ export class Sound {
       })
     }
     if (chain > 0 && chain % 5 === 0) {
-      const arp = [0, 4, 7, 12]
+      // Chain-milestone shimmer: 16th-spaced (on the grid), minor-key triad.
+      const arp = [0, 3, 7, 12]
       for (let k = 0; k < arp.length; k++) {
-        this.note({ at: at + k * 0.05, freq: f * Math.pow(2, arp[k] / 12), durMs: 80, type: 'sine', gain: 0.11 })
+        this.note({ at: at + k * stepDur, freq: f * Math.pow(2, arp[k] / 12), durMs: 80, type: 'sine', gain: 0.11, cancellable: true })
       }
       this.noise({ at, durMs: 320, gain: 0.055, filter: 'highpass', freq: 7000, endFreq: 12000 })
     }
   }
 
-  /** A chain snapping on a slow-but-correct answer. Deliberately OFF-grid —
-   *  breaks interrupt the music — but far lighter than wrong(): the run is
-   *  still alive, only the perfection is gone. Starts near the pitch the
-   *  chain had reached and falls, so the height of the loss is audible. */
+  /** A chain snapping on a slow-but-correct answer. Far lighter than
+   *  wrong(): the run is still alive, only the perfection is gone. Starts
+   *  near the pitch the chain had reached and falls, so the height of the
+   *  loss is audible. Grid-snapped (round 7): the run continues, so even a
+   *  loss stays inside the groove — only wrong() gets to interrupt time. */
   private chainBreak(chainWas: number): void {
     if (!this.ctx) return
-    const t = this.ctx.currentTime
+    const t = this.nextGrid()
     const f = 660 * Math.pow(2, perfectPitch(chainWas) / 12)
     this.note({ at: t, freq: f, endFreq: f * 0.5, durMs: 140, type: 'triangle', gain: 0.14 })
-    this.note({ at: t + 0.05, freq: 196, endFreq: 130, durMs: 160, type: 'sine', gain: 0.16 })
+    this.note({ at: t, freq: 196, endFreq: 130, durMs: 160, type: 'sine', gain: 0.16 })
     this.noise({ at: t, durMs: 110, gain: 0.07, filter: 'lowpass', freq: 2400, endFreq: 300 })
   }
 
@@ -1288,9 +1615,10 @@ export class Sound {
       this.musicBus.gain.cancelScheduledValues(t)
       this.musicBus.gain.setTargetAtTime(0.0001, t, 0.4)
     }
-    if (this.droneA && this.droneB && this.droneGain && this.droneFilter) {
-      this.droneA.frequency.setTargetAtTime(55, t, 0.5)
-      this.droneB.frequency.setTargetAtTime(55.3, t, 0.5)
+    if (this.padOscs.length > 0 && this.droneGain && this.droneFilter) {
+      for (const o of this.padOscs) {
+        o.frequency.setTargetAtTime(Math.max(30, o.frequency.value / 2), t, 0.5)
+      }
       this.droneFilter.frequency.setTargetAtTime(120, t, 0.5)
       this.droneGain.gain.setTargetAtTime(0.0001, t, 0.9)
     }
@@ -1338,13 +1666,12 @@ export class Sound {
     this.intensityV = v
     if (this.ctx && this.droneFilter && this.droneGain && this.beatOn && !this.muted) {
       const t = this.ctx.currentTime
-      // The pad brightens and swells as the run escalates (from the warmer
-      // 320Hz/0.08 opening the presence fix set). Skipped mid-drop: the drop
-      // owns the filter until its sweep settles.
+      // The pad brightens and swells as the run escalates. Skipped mid-drop:
+      // the drop owns the filter until its sweep settles.
       if (this.arr.section !== 'drop') {
-        this.droneFilter.frequency.setTargetAtTime(320 + v * v * 3700, t, 0.2)
+        this.droneFilter.frequency.setTargetAtTime(420 + v * v * 3700, t, 0.2)
       }
-      this.droneGain.gain.setTargetAtTime(0.08 + v * 0.03, t, 0.3)
+      this.droneGain.gain.setTargetAtTime(this.padLevel(), t, 0.3)
     }
   }
 
@@ -1368,7 +1695,8 @@ export class Sound {
     this.reverbSend = null
     this.reverbReturn = null
     this.noiseBuf = null
-    this.droneA = this.droneB = null
+    this.padOscs = []
+    this.lfo = null
     this.droneFilter = null
     this.droneGain = null
   }
