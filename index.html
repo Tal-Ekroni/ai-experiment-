@@ -1,5 +1,5 @@
 <!doctype html>
-<script type="module" crossorigin src="./assets/index-sHCmSG6U.js"></script>
+<script type="module" crossorigin src="./assets/index-ByC0rGHx.js"></script>
 
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
@@ -21,7 +21,9 @@
 
 <style>
   /* First paint is the game's own ground — never a white flash. The gradient
-     matches the home screen's radial exactly, so boot → home is one surface. */
+     matches the home screen's radial exactly, so boot → home is one surface.
+     VALUES MIRROR src/game/theme.ts (GROUND / COLOR.gold): this style runs
+     before any JS, so it cannot import the tokens — keep them in sync. */
   html,body { margin:0; height:100%; background:#06070b; overflow:hidden; touch-action:none;
               -webkit-user-select:none; user-select:none; overscroll-behavior:none; }
   body { background:radial-gradient(120% 90% at 50% 15%, hsl(228 45% 14%), #06070b) fixed #06070b; }
