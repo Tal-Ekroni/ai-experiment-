@@ -418,6 +418,36 @@ const LESSONS: Record<string, Lesson> = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Launch moment & haptics
+// ---------------------------------------------------------------------------
+
+/** Fade out index.html's boot splash (idempotent). The splash painted before
+ *  a single byte of JS ran; the shell owns the moment it hands over to the
+ *  home screen. It is pointer-events:none, so it never blocks the first tap —
+ *  the hold is a designed beat, not a stall. */
+function dismissSplash(fade: boolean): void {
+  if (typeof document === 'undefined') return
+  const el = document.getElementById('boot')
+  if (!el) return
+  if (!fade) { el.remove(); return }
+  const hold = Math.max(0, 800 - performance.now())
+  window.setTimeout(() => {
+    el.classList.add('gone')
+    window.setTimeout(() => el.remove(), 700)
+  }, hold)
+}
+
+/** One haptic tick where the hardware offers it (feature-detected: Android
+ *  browsers have navigator.vibrate, iOS Safari does not — there it degrades
+ *  to silence, never to an error). */
+function buzz(pattern: number | number[]): void {
+  try {
+    const nav = navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }
+    if (typeof nav.vibrate === 'function') nav.vibrate(pattern)
+  } catch { /* some webviews throw on vibrate — silence is the contract */ }
+}
+
 /** Which lesson (if any) a command needs. Swipes share one lesson. */
 function lessonKeyFor(cmd: Command): string | null {
   if (cmd.inhibit) return 'none'
@@ -612,6 +642,10 @@ export class Shell {
     }
 
     this.muted = this.meta.muted
+
+    // Harness/headless boots never show the home screen, so the splash would
+    // sit forever — drop it at once. Real boots hand over on the first show().
+    if (!this.enabled) dismissSplash(false)
   }
 
   muted = false
@@ -714,6 +748,7 @@ export class Shell {
       this.meta.taught.push(t.key)
       saveMeta(this.meta)
     }
+    buzz(15)                               // the move landed — confirm it in the hand
     this.hide()
     if (perform) this.opts.onTeachDone(perform)
     // For the inhibition lesson the release itself is the resolution: the
@@ -817,6 +852,7 @@ export class Shell {
         }
       }
       if (!this.enabled) return
+      buzz(45)                             // the run's full stop, felt in the hand
       if (this.overTimer !== null) clearTimeout(this.overTimer)
       this.overTimer = window.setTimeout(() => {
         this.overTimer = null
@@ -862,6 +898,9 @@ export class Shell {
     if (data.bestStreak > this.meta.bestStreak) this.meta.bestStreak = data.bestStreak
     saveMeta(this.meta)
     if (!this.enabled) return
+    // Felt in the hand: a Zen completion lands soft, a death lands hard, and a
+    // new best gets its own celebratory triple at the reveal (in showOver).
+    buzz(data.completed ? [15, 60, 15] : 45)
     const ctx: OverContext = {
       newBest, rank, prevBest, prevToday,
       modeRuns: st.modeRuns[mode], dailyStreak,
@@ -992,6 +1031,7 @@ export class Shell {
 
   private showOver(data: OverData, ctx: OverContext): void {
     const mode: ModeId = data.mode ?? 'classic'
+    if (ctx.newBest) buzz([15, 60, 15, 60, 35])   // the record moment, felt
     // Whatever this screen shows is what the share/challenge buttons copy.
     this.lastRun = {
       score: data.score, correct: data.correct ?? data.issued,
@@ -1436,11 +1476,13 @@ export class Shell {
     const now = performance.now()
     switch (this.screen) {
       case 'home':
+        buzz(12)
         this.opts.onPrime()
         this.startFlow(this.meta.mode)
         break
       case 'over':
         if (now - this.overRevealAt < 350) return   // last-gasp flail guard
+        buzz(12)
         // The daily attempt — and a duel's one try — are spent: their over
         // screens tap back to the menu, never into a replay.
         if (this.runMode === 'daily' || this.duelActive) {
@@ -1455,6 +1497,7 @@ export class Shell {
         this.beginRun(this.runMode)
         break
       case 'paused':
+        buzz(10)
         this.hide()
         this.opts.onResume()
         break
@@ -1538,8 +1581,7 @@ export class Shell {
   private wireButtons(): void {
     this.layer.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((b) => {
       const act = b.dataset.act!
-      const stop = (e: Event) => e.stopPropagation()
-      b.addEventListener('pointerdown', stop)
+      b.addEventListener('pointerdown', (e) => { e.stopPropagation(); buzz(8) })
       b.addEventListener('pointerup', (e) => { e.stopPropagation(); this.button(act) })
     })
   }
@@ -1689,6 +1731,9 @@ export class Shell {
 
   // -------------------------------------------------------------- utilities
 
+  /** The first real screen is the launch handoff: splash fades into it. */
+  private splashDone = false
+
   private show(screen: Screen, html: string): void {
     if (this.teach && screen !== 'teach') {
       if (this.teach.timer !== null) clearTimeout(this.teach.timer)
@@ -1697,6 +1742,7 @@ export class Shell {
     this.screen = screen
     this.layer.innerHTML = html
     this.layer.hidden = false
+    if (!this.splashDone) { this.splashDone = true; dismissSplash(true) }
   }
 
   private hide(): void {
@@ -1768,11 +1814,11 @@ export class Shell {
 .jsh-btn{appearance:none;border:1.5px solid rgba(255,255,255,.28);border-radius:999px;
   background:rgba(255,255,255,.06);color:#dfe6ff;font-weight:700;letter-spacing:.12em;
   font-size:clamp(11px,2.8vw,14px);padding:13px 18px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation}
-.jsh-btn:active{background:rgba(255,255,255,.16)}
+  touch-action:manipulation;transition:transform .1s ease,background .18s ease}
+.jsh-btn:active{background:rgba(255,255,255,.16);transform:scale(.95)}
 .jsh-pri{background:#5ce88f;color:#062012;border-color:transparent;
   box-shadow:0 0 24px rgba(92,232,143,.35)}
-.jsh-pri:active{background:#7df0a7}
+.jsh-pri:active{background:#7df0a7;transform:scale(.95)}
 .jsh-card{display:flex;flex-direction:column;align-items:center;gap:14px;max-width:min(88vw,420px);
   border:1.5px solid rgba(255,255,255,.16);border-radius:22px;padding:26px 24px;
   background:linear-gradient(180deg,rgba(20,24,40,.92),rgba(8,10,18,.94));
@@ -1827,8 +1873,9 @@ export class Shell {
 .jsh-seg{appearance:none;border:1.5px solid rgba(255,255,255,.22);border-radius:999px;
   background:rgba(255,255,255,.05);color:#aab8e8;font-weight:800;letter-spacing:.14em;
   font-size:clamp(12px,3vw,15px);padding:12px 18px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation}
-.jsh-seg:active{background:rgba(255,255,255,.14)}
+  touch-action:manipulation;transition:transform .1s ease,background .18s ease,
+  color .18s ease,box-shadow .18s ease}
+.jsh-seg:active{background:rgba(255,255,255,.14);transform:scale(.95)}
 .jsh-seg-on{background:#dfe6ff;color:#0a0f1c;border-color:transparent;
   box-shadow:0 0 22px rgba(160,180,255,.4)}
 .jsh-desc{font-weight:700;font-size:clamp(11px,2.8vw,13px);letter-spacing:.22em;text-indent:.22em;
@@ -1836,8 +1883,9 @@ export class Shell {
 .jsh-daily{appearance:none;border:1.5px solid rgba(255,215,107,.55);border-radius:999px;
   background:rgba(255,215,107,.08);color:#ffd76b;font-weight:800;letter-spacing:.12em;
   font-size:clamp(12px,3.1vw,15px);padding:13px 22px;font-family:inherit;cursor:pointer;
-  touch-action:manipulation;box-shadow:0 0 22px rgba(255,205,90,.18)}
-.jsh-daily:active{background:rgba(255,215,107,.2)}
+  touch-action:manipulation;box-shadow:0 0 22px rgba(255,205,90,.18);
+  transition:transform .1s ease,background .18s ease}
+.jsh-daily:active{background:rgba(255,215,107,.2);transform:scale(.96)}
 .jsh-daily-done{border-color:rgba(255,255,255,.2);background:rgba(255,255,255,.04);
   color:#93a0c9;box-shadow:none}
 .jsh-daychip{color:#ffd76b;border-color:rgba(255,215,107,.45)}

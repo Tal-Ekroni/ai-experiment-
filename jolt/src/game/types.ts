@@ -21,6 +21,26 @@ export interface Command {
 
 export type Phase = 'idle' | 'awaiting' | 'resolved' | 'over'
 
+// ---------------------------------------------------------------------------
+// Musical clock contract
+// ---------------------------------------------------------------------------
+/** Tempo range of the game's musical clock. The Engine advances a beat phase
+ *  at bpmForIntensity(intensity) and QUANTIZES command onsets to half-beat
+ *  boundaries, so game events land on the musical grid (structural rhythm,
+ *  not decoration). The audio layer's music bed must derive its tempo from
+ *  the SAME function (or read GameState.bpm directly) so the bed and the
+ *  engine's grid can never disagree. */
+export const BPM_MIN = 96
+export const BPM_MAX = 180
+
+/** Beats per minute at a given intensity (0..1, clamped). Linear and strictly
+ *  monotone: calm plays at BPM_MIN, full frenzy at BPM_MAX. Matches the
+ *  audio bed's historical 96→180 sweep, now owned here as the shared truth. */
+export function bpmForIntensity(i: number): number {
+  const t = Math.min(1, Math.max(0, i))
+  return BPM_MIN + (BPM_MAX - BPM_MIN) * t
+}
+
 /** Selectable ways to play. The configs live in commands.ts (MODES) so the
  *  ramp and the mode definitions evolve together. 'daily' is Classic rules on
  *  a date-derived seed — every player faces the identical sequence. */
@@ -85,6 +105,18 @@ export interface GameState {
    *  trace[i] is the score once the (i+1)th command resolved. The ghost pacer
    *  races the stored trace of your best run against this live one. */
   trace: number[]
+  /** Current tempo of the musical clock, bpmForIntensity(intensity). Rises
+   *  with the ramp; constant between command issues. Audio and render lock
+   *  their pulse to this so all three layers share one grid. */
+  bpm: number
+  /** Position inside the current beat, 0 (on the beat) to <1. Advanced by
+   *  tick(dtMs) at the current bpm — a pure function of ticks, no wall clock,
+   *  so seeded runs stay deterministic. */
+  beatPhase: number
+  /** Whole beats elapsed since the run started. With beatPhase this gives
+   *  pure-state consumers the full musical position (bar 0 starts at issue
+   *  of the first command). */
+  beatIndex: number
 }
 
 export interface RunReport {

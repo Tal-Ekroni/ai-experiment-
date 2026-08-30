@@ -122,6 +122,7 @@ const reducedMotion = (): boolean => !!rmQuery && rmQuery.matches
 export class Renderer {
   private root: HTMLElement
   private shaker = document.createElement('div')     // whole-screen punch target
+  private beatEl = document.createElement('div')     // beat-locked ground pulse (engine clock)
   private aurora = document.createElement('div')     // breathing radial glow (CSS-animated)
   private halo = document.createElement('div')       // slow conic sweep, clockwise
   private halo2 = document.createElement('div')      // slower counter-rotating sweep
@@ -172,6 +173,7 @@ export class Renderer {
   private cScore = ''
   private cCombo = ''
   private cChain = ''
+  private cBeatOp = ''
 
   // fixed particle pools — zero allocation per frame
   private pool: Particle[] = []
@@ -187,6 +189,12 @@ export class Renderer {
 
     this.shaker.style.cssText =
       'position:absolute;inset:0;display:grid;place-items:center;will-change:transform'
+
+    // Beat pulse: a soft glow rising from the floor that fires ON the musical
+    // grid (GameState.beatPhase) — the beat is seen, not only heard. Opacity
+    // only: composited, one cached style write per visible change.
+    this.beatEl.style.cssText =
+      'position:absolute;inset:0;pointer-events:none;will-change:opacity;opacity:0'
 
     // Ambient chrome: pure CSS animation (keyframes live in index.html) on
     // composited properties — alive from frame zero at no per-frame JS cost.
@@ -269,7 +277,7 @@ export class Renderer {
     }
     this.hud.append(this.scoreEl, this.livesEl)
 
-    this.shaker.append(this.aurora, this.halo, this.halo2, this.fx, this.vignette,
+    this.shaker.append(this.beatEl, this.aurora, this.halo, this.halo2, this.fx, this.vignette,
       this.flash, this.edgeL, this.edgeR, this.ring, this.glyph, this.kicker,
       this.label, this.sub, this.combo, this.chainEl, this.hud)
     this.root.append(this.shaker)
@@ -339,6 +347,7 @@ export class Renderer {
     this.wasFrozen = inhibit
 
     this.paintBackground(s, i, e, inhibit)
+    this.syncBeat(s, e, inhibit)
     this.syncLabel(s, art, inhibit, posed)
     this.syncEdges(s, art, inhibit)
     this.syncHud(s, i, e)
@@ -404,6 +413,11 @@ export class Renderer {
         `conic-gradient(from 120deg, transparent 0deg, hsl(${h + 40} 80% 62% / ${(ha * 0.7).toFixed(3)}) 55deg, transparent 130deg)`
       this.halo.style.animationDuration = `${(30 - e * 17).toFixed(1)}s`
       this.halo2.style.animationDuration = `${(44 - e * 22).toFixed(1)}s`
+      // The beat pulse shares the ambient hue so the throb reads as the SAME
+      // ground breathing, not a second light source. Restrained by design:
+      // its peak alpha is .16 scaled further by the per-frame opacity.
+      this.beatEl.style.background =
+        `radial-gradient(90% 62% at 50% 100%, hsl(${h} 90% 58% / .16), transparent 72%)`
     }
     // DO NOTHING: the whole ambient system holds its breath.
     const play = inhibit ? 'paused' : 'running'
@@ -481,6 +495,23 @@ export class Renderer {
       this.idleAnim.cancel()
       this.idleAnim = null
     }
+  }
+
+  /** THE BEAT, VISIBLE: the ground throbs on the engine's musical grid — a
+   *  sharp swell at each beat onset decaying through the beat, scaled by run
+   *  energy so it whispers early and drives late. Feature-detected on
+   *  GameState.beatPhase (older cores and posed states without the clock get
+   *  a still floor, never a crash). DO NOTHING holds its breath: no pulse. */
+  private syncBeat(s: GameState, e: number, inhibit: boolean): void {
+    const bp = (s as { beatPhase?: unknown }).beatPhase
+    let op = 0
+    if (typeof bp === 'number' && !inhibit && !reducedMotion() &&
+        (s.phase === 'awaiting' || s.phase === 'resolved')) {
+      const ph = Math.min(1, Math.max(0, bp))
+      op = Math.pow(1 - ph, 2.4) * (0.3 + 0.7 * e)
+    }
+    const key = op.toFixed(3)
+    if (key !== this.cBeatOp) { this.cBeatOp = key; this.beatEl.style.opacity = key }
   }
 
   /** Warm side-edge glow while a MOTION command is live: "the phone itself is

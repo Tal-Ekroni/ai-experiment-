@@ -40,6 +40,11 @@ let lastSpokenIssued = -1
 let inputGuardUntil = 0
 /** Game over already dispatched to sound + shell for this run. */
 let overHandled = false
+/** Last shell.paused() value the tick loop saw — the transition edge drives
+ *  sound.pause()/resume() so the audible countdown can never keep ticking
+ *  toward a deadline the frozen engine is no longer running (and re-arms with
+ *  the fresh window onResume grants). */
+let wasPaused = false
 
 const input = new Input({ onAction: (a: Action) => handleAction(a) })
 
@@ -122,7 +127,9 @@ function handleAction(a: Action): void {
   // The judgment travels WITH the hit: perfect-band verdict and live chain
   // height (post-resolve) drive the tiered earcon in audio.ts.
   if (after.lastResult === 'correct') sound.correct(after.streak, after.lastPerfect, after.chain)
-  else if (after.lastResult === 'wrong') sound.wrong()
+  // Lives travel with the miss: dropping to the final life queues the music's
+  // clutch drop on the next bar line.
+  else if (after.lastResult === 'wrong') sound.wrong(after.lives)
   maybeGameOver()                        // a wrong action can be the third life
 }
 
@@ -132,7 +139,22 @@ function tick(now: number) {
   if (!running) return
   const dt = Math.min(100, now - last)
   last = now
-  if (shell.paused()) { renderer.sync(engine.state); return }
+  // Pause/resume edge for the audio countdown (round-5 defect 3): entering
+  // any shell screen mid-command cancels the ticking deadline; leaving it
+  // re-arms the ticks for the fresh window onResume granted. Only a command
+  // that was actually announced re-arms — a brand-new run's first command
+  // gets its countdown from say() below, never twice.
+  const nowPaused = shell.paused()
+  if (nowPaused !== wasPaused) {
+    wasPaused = nowPaused
+    const ps = engine.state
+    if (nowPaused) {
+      if (ps.phase === 'awaiting') sound.pause()
+    } else if (ps.phase === 'awaiting' && ps.command && ps.issued === lastSpokenIssued) {
+      sound.resume(Math.max(0, ps.command.windowMs - ps.elapsed))
+    }
+  }
+  if (nowPaused) { renderer.sync(engine.state); return }
 
   const before = engine.state.phase
   engine.tick(dt)
@@ -153,7 +175,7 @@ function tick(now: number) {
   // inhibition command succeeding by the window lapsing. Fire each sound ONCE,
   // on the transition — lastResult alone persists across frames.
   if (before === 'awaiting' && (s.phase === 'resolved' || s.phase === 'over')) {
-    if (s.lastResult === 'timeout') sound.wrong()
+    if (s.lastResult === 'timeout') sound.wrong(s.lives)
     // A lapsed inhibition window: never perfect, and the engine passes the
     // chain THROUGH untouched — audio sees chain === its last value, so no
     // break sound fires (holding your nerve must not sound like failing).
@@ -162,6 +184,10 @@ function tick(now: number) {
 
   maybeGameOver()
 
+  // Lock the music to the engine's beat clock when this round's beat
+  // dimension is present on GameState (feature-detected — audio.ts stays
+  // fully standalone when it is not).
+  sound.syncClock(s as unknown)
   sound.setIntensity(intensity(engine.effectiveIssued()))
   renderer.sync(s)
   shell.frame(s)

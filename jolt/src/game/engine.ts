@@ -1,14 +1,23 @@
 /** Deterministic game core. No DOM, no audio, no timers of its own — the caller
  *  drives it with tick(dtMs) and submit(action). That is what lets the bot
  *  playtester run thousands of runs headlessly and measure fairness. */
-import { Action, GameState, ModeConfig, RunReport } from './types'
+import { Action, GameState, ModeConfig, RunReport, bpmForIntensity } from './types'
 import { makeRng, Rng } from './rng'
 import { MODES, nextCommand, intensity, PERFECT_FRAC } from './commands'
 
-/** Pause between a resolved command and the next one, so the player can breathe.
- *  Shrinks as intensity rises. */
-const RESOLVE_MS = 420
-const RESOLVE_FLOOR = 140
+/** Pause between a resolved command and the next one, in HALF-BEATS of the
+ *  musical clock: the session breathes in musical units — two half-beats at
+ *  calm easing to one at frenzy — and the onset of every command is then
+ *  quantized onto a half-beat boundary, so playing well inherently means
+ *  playing in time. At every intensity the musical gap is LONGER than the
+ *  historical raw-ms gap (420→140ms) it replaced: 625ms→167ms nominal before
+ *  quantization adds up to one more half-beat. Response windows are untouched
+ *  — the grid only ever delays the next command, never the deadline. */
+const GAP_HALF_BEATS_CALM = 2
+const GAP_HALF_BEATS_FRENZY = 1
+/** After a mistake the pause stretches by this factor (same 1.6 the raw-ms
+ *  engine used), then quantizes — a longer, still on-grid breath. */
+const MISTAKE_GAP_MULT = 1.6
 
 /** Bonus points for the Nth consecutive Perfect. Base points are UNTOUCHED —
  *  perfects are a visible extra stream on top, so historical scores stay
@@ -41,6 +50,10 @@ export class Engine {
   private deathWindowMs = 0
   /** The run ended because the mode's clock ran out — a completion, not a death. */
   private timeUp = false
+  /** Musical position in beats since the run began (float; beatIndex is its
+   *  floor, beatPhase its fraction). Advanced only by tick(dtMs) — no Date,
+   *  no AudioContext — so it is a pure function of the tick stream. */
+  private beatPos = 0
 
   constructor(seed = 1, mode: ModeConfig = MODES.classic) {
     this.mode = mode
@@ -50,7 +63,19 @@ export class Engine {
       lives: mode.lives, issued: 0, runtime: 0, lastResult: null, seed,
       mode: mode.id, correct: 0, rampIssued: mode.rampOffset,
       lastPerfect: false, chain: 0, bestChain: 0, perfects: 0, trace: [],
+      bpm: 0, beatPhase: 0, beatIndex: 0,
     }
+    this.state.bpm = this.tempo()
+  }
+
+  /** Current tempo from the shared contract — the one truth all layers read. */
+  private tempo(): number {
+    return bpmForIntensity(intensity(this.effectiveIssued()))
+  }
+
+  /** Duration of one half-beat at the current tempo, ms. */
+  private halfBeatMs(): number {
+    return 30000 / this.state.bpm
   }
 
   /** Command index the ramp actually sees: the run's issued count plus the
@@ -74,10 +99,29 @@ export class Engine {
     s.elapsed = 0
     s.issued++
     s.phase = 'awaiting'
+    // Tempo steps up with the ramp exactly when a command lands — never
+    // mid-gap, so the half-beat arithmetic below is exact across a whole gap.
+    s.bpm = this.tempo()
   }
 
+  /** Nominal pause before the next command, ms: a half-beat count that eases
+   *  from calm to frenzy, converted at the current tempo. */
   private resolveGap(): number {
-    return RESOLVE_MS - (RESOLVE_MS - RESOLVE_FLOOR) * intensity(this.effectiveIssued())
+    const i = intensity(this.effectiveIssued())
+    const halfBeats = GAP_HALF_BEATS_CALM - (GAP_HALF_BEATS_CALM - GAP_HALF_BEATS_FRENZY) * i
+    return halfBeats * this.halfBeatMs()
+  }
+
+  /** Quantize a nominal delay so the moment it elapses lands ON a half-beat
+   *  boundary of the musical clock: ceil to the next boundary — DELAY ONLY,
+   *  never advance — adding at most one half-beat. bpm is constant for the
+   *  whole gap (it only changes in issue()), so this arithmetic is exact.
+   *  Response windows are untouched; only the breather stretches. */
+  private quantizeToHalfBeat(delayMs: number): number {
+    const hb = this.halfBeatMs()
+    const pos = this.beatPos * 2                       // position in half-beats
+    const target = Math.ceil(pos + delayMs / hb - 1e-9)
+    return (target - pos) * hb
   }
 
   private succeed(): void {
@@ -107,7 +151,7 @@ export class Engine {
     }
     s.trace.push(s.score)
     s.phase = 'resolved'
-    this.resolveLeft = this.resolveGap()
+    this.resolveLeft = this.quantizeToHalfBeat(this.resolveGap())
   }
 
   private fail(cause: 'wrong' | 'timeout'): void {
@@ -121,7 +165,8 @@ export class Engine {
     this.deathWindowMs = s.command ? s.command.windowMs : 0
     if (this.mode.lifeLoss && s.lives <= 0) { s.phase = 'over'; return }
     s.phase = 'resolved'
-    this.resolveLeft = this.resolveGap() * 1.6   // a beat longer after a mistake
+    // A longer breath after a mistake, still landing on the grid.
+    this.resolveLeft = this.quantizeToHalfBeat(this.resolveGap() * MISTAKE_GAP_MULT)
   }
 
   /** Player performed an action. 'none' is never submitted — absence is inferred. */
@@ -137,6 +182,12 @@ export class Engine {
     const s = this.state
     if (s.phase === 'over' || s.phase === 'idle') return
     s.runtime += dtMs
+
+    // Musical clock: advance the beat phase at the current tempo. Pure state —
+    // audio and render read beatPhase/beatIndex/bpm to lock onto this grid.
+    this.beatPos += dtMs * s.bpm / 60000
+    s.beatIndex = Math.floor(this.beatPos)
+    s.beatPhase = this.beatPos - s.beatIndex
 
     // Time-limited modes (Zen) end on the clock, mid-command or not. This is
     // a completion — no life is lost and report() calls it 'alive'.
