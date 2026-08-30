@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Jolt Motion Lab</title>
+<style>
+  html,body{margin:0;min-height:100%;background:#06070b;color:#fff;
+    font-family:ui-rounded,system-ui,sans-serif;-webkit-user-select:none;user-select:none}
+  main{display:flex;flex-direction:column;gap:14px;padding:max(20px,env(safe-area-inset-top)) 20px 40px;max-width:520px;margin:0 auto}
+  h1{font-size:22px;margin:6px 0 0}
+  p{opacity:.8;line-height:1.5;margin:0}
+  button{font:700 17px inherit;color:#06070b;background:#ffd76b;border:0;border-radius:12px;
+    padding:16px;width:100%}
+  button:disabled{opacity:.4}
+  #stage{font-size:28px;font-weight:800;text-align:center;padding:26px 10px;border:2px solid #2a2f45;
+    border-radius:16px;min-height:70px;display:grid;place-items:center}
+  #live{font:600 14px ui-monospace,monospace;opacity:.85;white-space:pre-line;min-height:64px}
+  #fired{color:#5ce88f;font-weight:800}
+  textarea{width:100%;height:120px;background:#11131f;color:#9fb;border:1px solid #2a2f45;border-radius:10px;font:11px ui-monospace,monospace}
+</style>
+<main>
+  <h1>Jolt Motion Lab</h1>
+  <p>Records your phone's REAL motion so the shake detector can be tuned against reality
+     instead of synthetic guesses. It runs the actual game recogniser live — watch which
+     of your shakes it catches. ~60 seconds total.</p>
+  <button id="go">START (allows motion access)</button>
+  <div id="stage">—</div>
+  <div id="live"></div>
+  <button id="copy" disabled>COPY TRACE</button>
+  <textarea id="out" readonly placeholder="trace appears here — paste it back to Claude"></textarea>
+</main>
+<script type="module">
+import { ShakeCore } from './src/game/input'
+
+const stage = document.getElementById('stage')
+const live = document.getElementById('live')
+const out = document.getElementById('out')
+const goBtn = document.getElementById('go')
+const copyBtn = document.getElementById('copy')
+
+// Guided segments: label, seconds, instruction.
+const PLAN = [
+  ['still', 4, 'Hold the phone STILL'],
+  ['walk', 6, 'WALK a few steps, phone in hand'],
+  ['shake-normal', 6, 'SHAKE it like in the game — 5 normal shakes'],
+  ['shake-hard', 5, 'SHAKE HARD — 5 vigorous shakes'],
+  ['shake-lazy', 5, 'SHAKE LAZY — small quick wrist shakes'],
+  ['twist', 5, 'TWIST the phone — 4 twists'],
+  ['flip', 5, 'FLIP it face-down and back — twice'],
+]
+
+const rec = []          // {seg, t, ax..az, lx..lz|null, ga, be}
+let seg = null, segT0 = 0, fired = 0, peak = 0, samples = 0
+const shake = new ShakeCore(() => { fired++; stage.innerHTML = stage.textContent + ' <span id=fired>✓ DETECTED</span>' })
+
+let ga = null, be = null
+addEventListener('deviceorientation', (e) => { ga = e.gamma; be = e.beta })
+addEventListener('devicemotion', (e) => {
+  const g = e.accelerationIncludingGravity, l = e.acceleration
+  if (!g) return
+  const now = performance.now()
+  const m = l ? Math.hypot(l.x||0, l.y||0, l.z||0) : 0
+  peak = Math.max(peak, m); samples++
+  if (l && l.x !== null) shake.sample(l.x||0, l.y||0, l.z||0, now, true)
+  else shake.sample(g.x||0, g.y||0, g.z||0, now, false)
+  if (seg) rec.push([seg, Math.round(now - segT0),
+    +(g.x||0).toFixed(2), +(g.y||0).toFixed(2), +(g.z||0).toFixed(2),
+    l && l.x !== null ? +(l.x||0).toFixed(2) : null,
+    l && l.x !== null ? +(l.y||0).toFixed(2) : null,
+    l && l.x !== null ? +(l.z||0).toFixed(2) : null,
+    ga === null ? null : Math.round(ga), be === null ? null : Math.round(be)])
+  live.textContent = `samples ${samples}  rate ~${e.interval ? Math.round(1000/ (e.interval*1000 > 1 ? e.interval : e.interval*1000)) : '?'}Hz\npeak linear ${peak.toFixed(1)} m/s²\nrecognised shakes: ${fired}`
+})
+
+const sleep = (s) => new Promise(r => setTimeout(r, s * 1000))
+goBtn.onclick = async () => {
+  goBtn.disabled = true
+  try {
+    const DME = DeviceMotionEvent
+    if (typeof DME?.requestPermission === 'function') {
+      const p = await DME.requestPermission()
+      if (p !== 'granted') { stage.textContent = 'motion permission denied'; return }
+    }
+    if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+      await DeviceOrientationEvent.requestPermission().catch(() => {})
+    }
+  } catch { stage.textContent = 'motion unavailable'; return }
+  await sleep(0.5)
+  for (const [name, secs, text] of PLAN) {
+    for (let c = 3; c > 0; c--) { stage.textContent = `${text} — in ${c}`; await sleep(1) }
+    stage.textContent = text; seg = name; segT0 = performance.now()
+    await sleep(secs)
+    seg = null
+  }
+  stage.textContent = 'DONE — copy the trace and paste it to Claude'
+  const meta = { ua: navigator.userAgent, samples: rec.length, recognised: fired, peak: +peak.toFixed(1) }
+  const json = JSON.stringify({ meta, rec })
+  let text = ''
+  try {
+    const cs = new CompressionStream('deflate-raw')
+    const blob = new Blob([json]).stream().pipeThrough(cs)
+    const buf = new Uint8Array(await new Response(blob).arrayBuffer())
+    let bin = ''; for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i])
+    text = 'JOLTTRACE1:' + btoa(bin)
+  } catch { text = 'JOLTTRACE0:' + json }
+  out.value = text
+  copyBtn.disabled = false
+  copyBtn.onclick = () => { navigator.clipboard?.writeText(text); copyBtn.textContent = 'COPIED ✓' }
+}
+</script>
