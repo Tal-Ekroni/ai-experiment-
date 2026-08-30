@@ -60,6 +60,12 @@ const MAX_MOTES = 34    // always-on ambient field, preallocated
 /** PERFECT layer look: gold, distinct from every command family hue. */
 const PERFECT_HUE = 48
 
+/** Ghost pacer gauge: a score gap of this many points swings the YOU marker to
+ *  full deflection (~4-8 commands' worth — the band where a race feels live),
+ *  and the swing itself spans ±30% of the circle either side of 12 o'clock. */
+const GHOST_SPAN = 220
+const GHOST_SWING = TAU * 0.3
+
 /** Ghost pacer persistence: the per-command score trace of your best run per
  *  mode, stored by the renderer (pure engine state in, localStorage out — the
  *  engine itself stays storage-free for the headless harnesses). */
@@ -298,13 +304,18 @@ export class Renderer {
     // Ghost pacer bookkeeping: arm the ghost when a run starts, bank the trace
     // when one ends. Both keyed on phase transitions, so posed frames (which
     // jump straight into 'awaiting') behave deterministically too.
+    // DAILIES ARE EXCLUDED from ghost racing, deliberately: every daily is a
+    // DIFFERENT seeded sequence, so yesterday's trace would pace commands that
+    // never happen today — a race that only pretends to be fair. The daily's
+    // chase target is its streak and the shared seed, not a ghost.
     if (s.phase === 'awaiting' && this.pPhase !== 'awaiting' && this.pPhase !== 'resolved') {
-      const g = loadGhosts()[s.mode]
+      const g = s.mode !== 'daily' ? loadGhosts()[s.mode] : null
       this.ghost = g && g.score > 0 && g.trace.length ? g : null
       this.ghostMode = s.mode
       this.ghostBeaten = false
     }
-    if (s.phase === 'over' && this.pPhase !== 'over' && s.trace.length && s.score > 0) {
+    if (s.phase === 'over' && this.pPhase !== 'over' && s.trace.length && s.score > 0 &&
+        s.mode !== 'daily') {
       const all = loadGhosts()
       const prev = all[s.mode]
       if (!prev || s.score > prev.score) {
@@ -1029,12 +1040,17 @@ export class Renderer {
     c.fill()
   }
 
-  /** GHOST PACER: one lap of the outer track = your best run's final score.
-   *  The dim gray dot is where that run's score stood after this many
-   *  commands (frozen at its crash site once your run outlives its trace);
-   *  the small colored dot is you — green when ahead, red when behind, with a
-   *  faint gap arc between the two. Complete the lap and the ghost is beaten:
-   *  the renderer says so once, then clears the periphery for the endgame.
+  /** GHOST PACER: the race against your best run, made legible from command
+   *  five, not command fifty. The hollow gray diamond is your best run's PACE,
+   *  pinned at 12 o'clock; the solid diamond is YOU, swinging clockwise when
+   *  ahead of that pace and counter-clockwise when behind, gap arc between the
+   *  two. The swing is normalised against the ghost's score AT THE SAME
+   *  COMMAND INDEX, in points (±GHOST_SPAN = full swing) — a one-perfect lead
+   *  on command 5 reads exactly like one on command 50, where the old
+   *  final-score normalisation kept both markers crawling sub-pixel near 12
+   *  o'clock until the endgame. Once your run outlives the trace the ghost is
+   *  dead (its diamond hollows out further and dims); pass its final score
+   *  and the race is won — GHOST DOWN, periphery cleared for the endgame.
    *  Everything lives OUTSIDE the timer ring — the command label and the live
    *  countdown stay untouched. */
   private drawGhost(s: GameState, baseR: number): void {
@@ -1050,16 +1066,17 @@ export class Renderer {
       return
     }
     const gs = ghostScoreAt(g.trace, resolved)
+    const dead = resolved >= g.trace.length     // ghost crashed; pace frozen
     const c = this.ctx
     const w = this.ring.width
     const track = baseR + 17
-    const yp = Math.min(1, s.score / g.score)
-    const gp = Math.min(1, gs / g.score)
-    const ahead = s.score >= gs
-    const ya = -Math.PI / 2 + yp * TAU
-    const ga = -Math.PI / 2 + gp * TAU
-    // The gap between the racers — the subtle ahead/behind cue.
-    if (Math.abs(yp - gp) > 0.004) {
+    const delta = s.score - gs
+    const rel = Math.max(-1, Math.min(1, delta / GHOST_SPAN))
+    const ahead = delta >= 0
+    const ga = -Math.PI / 2                      // the pace line, always at 12
+    const ya = ga + rel * GHOST_SWING            // you, ahead → clockwise
+    // The gap between the racers — the ahead/behind cue, colored by verdict.
+    if (Math.abs(rel) > 0.02) {
       c.lineWidth = 2.5
       c.strokeStyle = ahead ? 'hsl(145 75% 60% / .3)' : 'hsl(355 75% 62% / .28)'
       c.beginPath()
@@ -1074,9 +1091,10 @@ export class Renderer {
       c.moveTo(x, y - r2); c.lineTo(x + r2, y); c.lineTo(x, y + r2); c.lineTo(x - r2, y)
       c.closePath()
     }
-    // The ghost: dimmer, hollow and colorless — clearly not part of the live world.
+    // The ghost: dimmer, hollow and colorless — clearly not part of the live
+    // world. Once it is dead its outline fades further: a crash site, not a racer.
     c.lineWidth = 1.6
-    c.strokeStyle = 'hsl(220 25% 76% / .55)'
+    c.strokeStyle = dead ? 'hsl(220 25% 76% / .3)' : 'hsl(220 25% 76% / .55)'
     diamond(ga, 4.6)
     c.stroke()
     // You: small, solid and bright, colored by how the race is going.
