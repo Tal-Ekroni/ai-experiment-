@@ -73,6 +73,10 @@ interface Stats {
   /** Best score per mode for todayDay only — powers "best run today". */
   todayDay: string
   todayBest: PerMode
+  /** Lifetime PERFECT count — every gold-band hit ever, across all modes. */
+  perfects: number
+  /** Longest perfect chain ever. */
+  bestChain: number
 }
 
 const DEFAULT_STATS: Stats = {
@@ -80,6 +84,7 @@ const DEFAULT_STATS: Stats = {
   best: zeroPerMode(), modeRuns: zeroPerMode(),
   top: { classic: [], sudden: [], zen: [], daily: [] },
   todayDay: '', todayBest: zeroPerMode(),
+  perfects: 0, bestChain: 0,
 }
 
 function readPerMode(v: unknown): PerMode {
@@ -123,6 +128,8 @@ function loadStats(): Stats {
         top,
         todayDay: typeof m.todayDay === 'string' ? m.todayDay : '',
         todayBest: readPerMode(m.todayBest),
+        perfects: Math.max(0, Number(m.perfects) || 0),
+        bestChain: Math.max(0, Number(m.bestChain) || 0),
       }
     }
   } catch {
@@ -199,6 +206,24 @@ export function rankOf(prevTop: number[], score: number): number {
   let ahead = 0
   for (const v of prevTop) if (v >= score) ahead++
   return ahead + 1
+}
+
+/** Letter-style judgement of a run's PRECISION — how much of it was played
+ *  inside the gold band. Returns null when the run hasn't earned a letter:
+ *  a grade that shows up for two lucky perfects would cheapen every real one.
+ *  The rate is perfects / correct; inhibition commands can never be perfect
+ *  (they sit in `correct` but have no timing), so the thresholds leave the
+ *  headroom an all-perfect-plus-traps run actually produces. Pure, so the
+ *  ladder is unit-testable. */
+export function gradeRun(perfects: number, correct: number, bestChain: number):
+  'S' | 'A' | 'B' | 'C' | null {
+  if (correct <= 0 || perfects <= 0) return null
+  const rate = perfects / correct
+  if (perfects >= 15 && rate >= 0.7 && bestChain >= 10) return 'S'
+  if (perfects >= 8 && rate >= 0.5 && bestChain >= 5) return 'A'
+  if (perfects >= 5 && rate >= 0.35) return 'B'
+  if (perfects >= 3 && rate >= 0.2) return 'C'
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +345,26 @@ interface Lesson {
   touchHow?: string
   /** Desktop keyboard alternative. */
   key?: string
+  /** Inline SVG shown in place of the glyph (zero-asset diagram). */
+  svg?: string
+  /** Override for the TRY IT NOW foot line. */
+  note?: string
 }
+
+/** The gold band, drawn exactly as the ring draws it: the band ends at the
+ *  drain head (12 o'clock) and covers the first 30% of the window, notch at
+ *  its far edge. Inline SVG — zero assets, matches render.ts geometry. */
+const BAND_SVG = `
+  <svg viewBox="0 0 100 100" width="100%" height="100%">
+    <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="9"/>
+    <path d="M 12 62.4 A 40 40 0 0 1 50 10" fill="none" stroke="#ffd76b"
+      stroke-width="9" stroke-linecap="round"/>
+    <line x1="18.6" y1="60.2" x2="5.3" y2="64.6" stroke="#ffd76b" stroke-width="3"/>
+    <circle cx="50" cy="10" r="6.5" fill="#fff"/>
+  </svg>`
+
+/** Matches render.ts's PERFECT_HUE (48) — the tutorial gold IS the game gold. */
+const PERFECT_TEACH_HUE = 48
 
 /** Hues match render.ts's per-action accents so the tutorial and the game read
  *  as one product. TAP is deliberately absent: the player tapped to start the
@@ -362,6 +406,15 @@ const LESSONS: Record<string, Lesson> = {
   'none': {
     pill: 'TRAP', glyph: '✖', hue: 205,
     how: 'When it says DO NOTHING — freeze. Moving is the mistake. Wait it out.',
+  },
+  /** Not a move — the mastery layer. Shown once, on the first command of a
+   *  player's second run (run one teaches the loop; run two names the target
+   *  the veteran will chase forever). */
+  'perfect': {
+    pill: 'THE GOLD BAND', glyph: '◔', hue: PERFECT_TEACH_HUE,
+    svg: BAND_SVG,
+    how: 'Every ring opens with a gold band. Answer while the gold is still there — that’s a PERFECT. Chain them and the bonus climbs.',
+    note: 'TRY IT NOW — CATCH THE GOLD',
   },
 }
 
@@ -414,6 +467,11 @@ interface OverData {
   correct?: number
   /** True when the run ran its full clock (Zen) — a completion, not a death. */
   completed?: boolean
+  /** Gold-band hits this run. Optional: when the caller doesn't pass them the
+   *  shell falls back to the values it watched go by in frame(). */
+  perfects?: number
+  /** Longest perfect chain this run (same fallback). */
+  bestChain?: number
 }
 
 /** How this run sits against the player's own history — computed BEFORE the
@@ -475,6 +533,10 @@ export class Shell {
   private duels: DuelRec[] = []
   /** What the visible over screen shows — feeds the share/challenge buttons. */
   private lastRun: { score: number; correct: number; issued: number; mode: ModeId } | null = null
+  /** Mastery numbers watched go by in frame() — endRun's fallback when its
+   *  caller predates the perfect layer and doesn't pass them itself. The shell
+   *  never reaches into the Engine; it reads the same GameState every frame. */
+  private liveMastery = { perfects: 0, bestChain: 0 }
 
   constructor(opts: ShellOptions) {
     this.opts = opts
@@ -586,8 +648,16 @@ export class Shell {
    *  never been seen; returns true if the world should freeze. */
   maybeTeach(cmd: Command): boolean {
     if (!this.enabled) return false
-    const key = lessonKeyFor(cmd)
-    if (!key || this.meta.taught.includes(key)) return false
+    const moveKey = lessonKeyFor(cmd)
+    // Move lessons take precedence; once every move on screen is known, the
+    // gold band gets its one moment — the first command of the player's
+    // SECOND run (run one teaches the loop, run two names the target), so a
+    // player who hesitated through run one still meets the band head-on.
+    const key = moveKey && !this.meta.taught.includes(moveKey)
+      ? moveKey
+      : !cmd.inhibit && this.meta.games >= 1 && !this.meta.taught.includes('perfect')
+        ? 'perfect' : null
+    if (!key) return false
     const lesson = LESSONS[key]
     this.teach = { key, cmd, timer: null }
     this.showTeach(cmd, lesson)
@@ -673,6 +743,12 @@ export class Shell {
     if (!this.enabled) return
     const phase = s.phase
     this.lastPhase = phase
+    // Track the run's mastery numbers as they happen, so the over screen can
+    // honor them even when endRun's caller doesn't pass them.
+    if (phase === 'awaiting' || phase === 'resolved' || phase === 'over') {
+      this.liveMastery.perfects = s.perfects
+      this.liveMastery.bestChain = s.bestChain
+    }
     if (!this.bestToastDone && s.score > this.chaseBest &&
         (phase === 'awaiting' || phase === 'resolved')) {
       this.bestToastDone = true
@@ -710,6 +786,10 @@ export class Shell {
     const mode: ModeId = data.mode ?? 'classic'
     const today = dailyKey()
     const st = this.stats
+    // Mastery numbers: what the caller passed, else what frame() watched
+    // happen. Filled onto `data` so every over screen downstream honors them.
+    data.perfects = Math.max(0, data.perfects ?? this.liveMastery.perfects)
+    data.bestChain = Math.max(0, data.bestChain ?? this.liveMastery.bestChain)
 
     // --- a duel run: real play, but its score never enters the mode
     // records — a duel replays a KNOWN sequence, and known-sequence scores
@@ -720,6 +800,8 @@ export class Shell {
       st.runs++
       if (st.lastDay !== today) { st.lastDay = today; st.days++ }
       if (data.bestStreak > st.bestStreak) st.bestStreak = data.bestStreak
+      st.perfects += data.perfects
+      if (data.bestChain > st.bestChain) st.bestChain = data.bestChain
       saveStats(st)
       this.meta.games++
       if (data.bestStreak > this.meta.bestStreak) this.meta.bestStreak = data.bestStreak
@@ -759,6 +841,8 @@ export class Shell {
     if (data.bestStreak > st.bestStreak) st.bestStreak = data.bestStreak
     if (st.todayDay !== today) { st.todayDay = today; st.todayBest = zeroPerMode() }
     if (data.score > st.todayBest[mode]) st.todayBest[mode] = data.score
+    st.perfects += data.perfects ?? 0
+    if ((data.bestChain ?? 0) > st.bestChain) st.bestChain = data.bestChain ?? 0
     if (newBest) st.best[mode] = data.score
     st.top[mode] = [...st.top[mode], data.score].sort((a, b) => b - a).slice(0, 10)
     saveStats(st)
@@ -874,13 +958,16 @@ export class Shell {
     const foot = cmd.inhibit
       ? `<div class="jsh-bar"><div class="jsh-barfill"></div></div>
          <div class="jsh-note">HOLD STILL…</div>`
-      : '<div class="jsh-note jsh-pulse">TRY IT NOW</div>'
+      : `<div class="jsh-note jsh-pulse">${lesson.note ?? 'TRY IT NOW'}</div>`
     const accent = `hsl(${lesson.hue} 90% 62%)`
+    const visual = lesson.svg
+      ? `<div class="jsh-ringviz">${lesson.svg}</div>`
+      : `<div class="jsh-glyph" style="color:${accent}">${glyph}</div>`
     this.show('teach', `
       <div class="jsh-wrap jsh-dim jsh-in">
         <div class="jsh-card" style="border-color:${accent}44">
           <div class="jsh-pill" style="color:${accent};border-color:${accent}55">${lesson.pill}</div>
-          <div class="jsh-glyph" style="color:${accent}">${glyph}</div>
+          ${visual}
           <div class="jsh-h">${cmd.label}</div>
           <div class="jsh-p">${how}</div>
           ${keyHint}
@@ -888,6 +975,19 @@ export class Shell {
           <div class="jsh-keys">no lives lost while learning</div>
         </div>
       </div>`)
+  }
+
+  /** The gold judgment strip: perfects, best chain, and — when the run earns
+   *  one — a letter grade. Absent entirely for a perfect-less run, so the gold
+   *  stays something you did, never furniture. */
+  private judgeHtml(data: OverData): string {
+    const perfects = data.perfects ?? 0
+    const bestChain = data.bestChain ?? 0
+    if (perfects <= 0) return ''
+    const grade = gradeRun(perfects, data.correct ?? data.issued, bestChain)
+    const chain = bestChain >= 2 ? ` · CHAIN ×${bestChain}` : ''
+    return `<div class="jsh-judge">${grade ? `<b>${grade}</b>` : ''}<span>${perfects} PERFECT${
+      perfects === 1 ? '' : 'S'}${chain}</span></div>`
   }
 
   private showOver(data: OverData, ctx: OverContext): void {
@@ -935,6 +1035,7 @@ export class Shell {
           <span>${data.correct ?? data.issued}<i>OBEYED</i></span>
           <span>${secs}s<i>${completed ? 'IN FLOW' : 'SURVIVED'}</i></span>
         </div>`
+    const judge = this.judgeHtml(data)
 
     // The daily ends differently: the attempt is spent, the pull is tomorrow.
     if (mode === 'daily') {
@@ -950,10 +1051,11 @@ export class Shell {
           ${streakLine}
           ${bestLine}
           ${statRow}
+          ${judge}
           <div class="jsh-desc">THAT WAS TODAY’S ONE TRY · NEW SEED IN ${untilMidnight()}</div>
           <div class="jsh-play jsh-pulse">SEE YOU TOMORROW — TAP FOR MENU</div>
           <div class="jsh-row">
-            <button class="jsh-btn" data-act="share">COPY RESULT</button>
+            <button class="jsh-btn" data-act="share">${this.canNativeShare() ? 'SHARE RESULT' : 'COPY RESULT'}</button>
             <button class="jsh-btn" data-act="challenge">CHALLENGE A FRIEND</button>
           </div>
         </div>`)
@@ -975,6 +1077,7 @@ export class Shell {
         <div class="jsh-score${ctx.newBest ? ' jsh-gold' : ''}">0</div>
         ${bestLine}
         ${statRow}
+        ${judge}
         <div class="jsh-play jsh-pulse">TAP TO GO AGAIN</div>
         ${dailyNudge}
         <div class="jsh-row">
@@ -1024,7 +1127,7 @@ export class Shell {
               and it’s spent. Send your side back, or start a fresh run and fire
               a new challenge from its game-over screen.</div>
             <div class="jsh-row">
-              <button class="jsh-btn jsh-pri" data-act="rebuttal">COPY YOUR REPLY</button>
+              <button class="jsh-btn jsh-pri" data-act="rebuttal">${this.canNativeShare() ? 'SEND YOUR REPLY' : 'COPY YOUR REPLY'}</button>
               <button class="jsh-btn" data-act="menu">MENU</button>
             </div>
           </div>
@@ -1075,14 +1178,18 @@ export class Shell {
       <div class="jsh-wrap jsh-deep jsh-in">
         <div class="jsh-kick" style="color:${titleColor}">${title}</div>
         ${killer}
-        <div class="jsh-score${win ? ' jsh-gold' : ''}">0</div>
-        <div class="jsh-vs"><span>${mine}<i>YOU</i></span><b>·</b><span>${ch.score}<i>THEY CLAIM</i></span></div>
+        <div class="jsh-vs jsh-duelvs">
+          <span><em class="jsh-score${win ? ' jsh-gold' : ''}">0</em><i>YOU</i></span>
+          <b>·</b>
+          <span><em class="jsh-their">${ch.score}</em><i>THEY CLAIM</i></span>
+        </div>
         <div class="jsh-chip">${margin}</div>
         <div class="jsh-stats">
           <span>×${data.bestStreak}<i>TOP STREAK</i></span>
           <span>${data.correct ?? data.issued}<i>OBEYED</i></span>
           <span>${Math.max(1, Math.round(data.runtimeMs / 1000))}s<i>SURVIVED</i></span>
         </div>
+        ${this.judgeHtml(data)}
         <div class="jsh-play jsh-pulse">${win ? 'SEND IT BACK — TAP FOR MENU' : 'TAP FOR MENU'}</div>
         <div class="jsh-row">
           <button class="jsh-btn jsh-pri" data-act="rebuttal">SEND THE REBUTTAL</button>
@@ -1107,14 +1214,47 @@ export class Shell {
     try { return location.origin + location.pathname } catch { return '' }
   }
 
-  /** Copy to the clipboard with an honest fallback: if the clipboard is
-   *  unavailable the text itself becomes the toast, so nothing is lost. */
+  /** True when a native share sheet will actually open — drives button verbs. */
+  private canNativeShare(): boolean {
+    return this.touchDevice &&
+      typeof (navigator as { share?: unknown }).share === 'function'
+  }
+
+  /** Share a result artifact the way the device natively does it: the system
+   *  share sheet where one exists (a user gesture is live — every caller is a
+   *  button), the clipboard elsewhere. A dismissed sheet is a decision, not a
+   *  failure — it stays silent; a sheet that ERRORS falls back to the
+   *  clipboard so the artifact is never lost. */
+  private shareOut(text: string, okMsg: string): void {
+    const nav = navigator as Navigator & { share?: (data: { text: string }) => Promise<void> }
+    if (this.touchDevice && typeof nav.share === 'function') {
+      try {
+        nav.share({ text })
+          .then(() => this.toast('SHARED'))
+          .catch((err: unknown) => {
+            if ((err as { name?: string } | null)?.name === 'AbortError') return
+            this.copyText(text, okMsg)
+          })
+        return
+      } catch { /* a throwing share() implementation — use the clipboard */ }
+    }
+    this.copyText(text, okMsg)
+  }
+
+  /** Copy to the clipboard with an honest last resort: if the clipboard is
+   *  unavailable too, the toast carries the LINK itself (or the artifact's
+   *  first line when there is none) and stays up long enough to read —
+   *  a challenge must never silently lose its URL. */
   private copyText(text: string, okMsg: string): void {
+    const lastResort = () => {
+      const url = text.split('\n').find((l) => /^https?:\/\//.test(l))
+      this.toast(url ? `COPY BLOCKED — YOUR LINK: ${url}` : text.split('\n')[0], 7000)
+    }
     try {
       void navigator.clipboard.writeText(text)
         .then(() => this.toast(okMsg))
-        .catch(() => this.toast(text.split('\n')[0]))
-    } catch { this.toast(text.split('\n')[0]) }
+        .catch(lastResort)
+    } catch { lastResort() }
   }
 
   /** Lifetime stats — the visible shape of every run ever played. */
@@ -1132,6 +1272,8 @@ export class Shell {
             <span>${val(st.runs)}<i>RUNS</i></span>
             <span>${val(st.days)}<i>DAYS PLAYED</i></span>
             <span>${st.bestStreak > 0 ? '×' + st.bestStreak : '—'}<i>BEST STREAK EVER</i></span>
+            <span class="jsh-goldcell">${val(st.perfects)}<i>PERFECTS</i></span>
+            <span class="jsh-goldcell">${st.bestChain > 0 ? '×' + st.bestChain : '—'}<i>BEST PERFECT CHAIN</i></span>
             <span>${val(streakLive)}<i>DAILY STREAK</i></span>
             <span>${val(this.daily.bestStreak)}<i>LONGEST DAILY STREAK</i></span>
           </div>
@@ -1207,6 +1349,8 @@ export class Shell {
       this.stats.runs = Math.max(this.stats.runs, 42)
       this.stats.days = Math.max(this.stats.days, 6)
       this.stats.bestStreak = Math.max(this.stats.bestStreak, 21)
+      this.stats.perfects = Math.max(this.stats.perfects, 214)
+      this.stats.bestChain = Math.max(this.stats.bestChain, 12)
       this.showStats()
     }
     else if (name === 'paused') this.showPaused()
@@ -1216,7 +1360,7 @@ export class Shell {
       this.showOver({
         score: 487, bestStreak: 12, issued: 34, runtimeMs: 58200,
         deathLabel: 'TWIST IT', deathCause: 'timeout', deathInhibit: false,
-        mode: 'classic', correct: 31,
+        mode: 'classic', correct: 31, perfects: 12, bestChain: 7,
       }, { newBest: false, rank: 4, prevBest: 1240, prevToday: 0, modeRuns: 12, dailyStreak: 0 })
     } else if (name === 'over-best') {
       this.runMode = 'classic'
@@ -1224,7 +1368,7 @@ export class Shell {
       this.showOver({
         score: 1240, bestStreak: 21, issued: 61, runtimeMs: 84100,
         deathLabel: 'DO NOTHING', deathCause: 'wrong', deathInhibit: true,
-        mode: 'classic', correct: 55,
+        mode: 'classic', correct: 55, perfects: 40, bestChain: 15,
       }, { newBest: true, rank: 1, prevBest: 980, prevToday: 0, modeRuns: 12, dailyStreak: 0 })
     } else if (name === 'over-daily') {
       this.runMode = 'daily'
@@ -1232,13 +1376,13 @@ export class Shell {
       this.showOver({
         score: 640, bestStreak: 14, issued: 41, runtimeMs: 63400,
         deathLabel: 'FLIP IT', deathCause: 'timeout', deathInhibit: false,
-        mode: 'daily', correct: 37,
+        mode: 'daily', correct: 37, perfects: 9, bestChain: 5,
       }, { newBest: false, rank: 3, prevBest: 810, prevToday: 0, modeRuns: 5, dailyStreak: 4 })
     } else if (name === 'over-zen') {
       this.runMode = 'zen'
       this.showOver({
         score: 720, bestStreak: 18, issued: 52, runtimeMs: 90000,
-        mode: 'zen', correct: 47, completed: true,
+        mode: 'zen', correct: 47, completed: true, perfects: 21, bestChain: 9,
       }, { newBest: true, rank: 1, prevBest: 610, prevToday: 0, modeRuns: 3, dailyStreak: 0 })
     }
     else if (name === 'duel') {
@@ -1263,8 +1407,13 @@ export class Shell {
       this.showDuelOver({
         score: 512, bestStreak: 15, issued: 46, runtimeMs: 66000,
         deathLabel: 'PINCH IT', deathCause: 'timeout', deathInhibit: false,
-        mode: 'classic', correct: 43,
+        mode: 'classic', correct: 43, perfects: 16, bestChain: 6,
       })
+    }
+    else if (name === 'teach-perfect') {
+      const cmd: Command = { action: 'tap', label: 'TAP IT', windowMs: 1760, inhibit: false }
+      this.teach = { key: 'perfect', cmd, timer: null }
+      this.showTeach(cmd, LESSONS['perfect'])
     }
     else if (name === 'teach-none') {
       this.teach = { key: 'none', cmd: { action: 'none', label: 'DO NOTHING', windowMs: 200, inhibit: true }, timer: null }
@@ -1316,6 +1465,7 @@ export class Shell {
   /** Every run start funnels through here so the chase target is armed. A tiny
    *  best is not worth a mid-run interruption. */
   private beginRun(mode: ModeId): void {
+    this.liveMastery = { perfects: 0, bestChain: 0 }
     // A pending duel takes the run over: known seed, one committed try.
     const duel = this.pendingDuel ? this.duelCh : null
     this.pendingDuel = false
@@ -1444,7 +1594,7 @@ export class Shell {
           correct: this.lastRun ? this.lastRun.correct : 0,
           streak: d.streak,
         })
-        this.copyText(text, 'RESULT COPIED — PASTE IT ANYWHERE')
+        this.shareOut(text, 'RESULT COPIED — PASTE IT ANYWHERE')
         break
       }
       case 'challenge': {
@@ -1473,7 +1623,7 @@ export class Shell {
         const text = challengeShareText({
           score: run.score, correct: run.correct, url: duelUrl(this.pageBase(), ch),
         })
-        this.copyText(text, 'CHALLENGE COPIED — SEND IT TO SOMEONE')
+        this.shareOut(text, 'CHALLENGE COPIED — SEND IT TO SOMEONE')
         break
       }
       case 'rebuttal': {
@@ -1488,7 +1638,7 @@ export class Shell {
         const text = duelShareText({
           mine, theirs: ch.score, correct: rec ? rec.obeyed : 0, url,
         })
-        this.copyText(text, 'REBUTTAL COPIED — SEND IT BACK')
+        this.shareOut(text, 'REBUTTAL COPIED — SEND IT BACK')
         break
       }
       case 'duel-accept': {
@@ -1556,15 +1706,17 @@ export class Shell {
     if (this.countAnim !== null) { cancelAnimationFrame(this.countAnim); this.countAnim = null }
   }
 
-  private toast(msg: string): void {
+  private toast(msg: string, ms = 2600): void {
     if (!this.enabled) return
     this.toastEl.textContent = msg
     this.toastEl.hidden = false
+    // Long content (a rescued URL) wraps instead of running off the phone.
+    this.toastEl.classList.toggle('jsh-toast-wrap', msg.length > 44)
     this.toastEl.style.animation = 'none'
     void this.toastEl.offsetWidth
-    this.toastEl.style.animation = 'jshToast 2.6s ease-out forwards'
+    this.toastEl.style.animation = `jshToast ${(ms / 1000).toFixed(1)}s ease-out forwards`
     if (this.toastTimer !== null) clearTimeout(this.toastTimer)
-    this.toastTimer = window.setTimeout(() => { this.toastEl.hidden = true }, 2650)
+    this.toastTimer = window.setTimeout(() => { this.toastEl.hidden = true }, ms + 50)
   }
 
   /** Game-over score counts up — the run is worth savouring for a beat. */
@@ -1649,6 +1801,20 @@ export class Shell {
 .jsh-vs span{display:flex;flex-direction:column;align-items:center;gap:5px}
 .jsh-vs b{color:#7c89b4;font-size:clamp(18px,5vw,28px)}
 .jsh-vs i{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.24em;color:#8b98c4}
+/* Duel over: the head-to-head IS the hero — your side counts up big and
+   bright, their claim sits at the same scale but dimmer. */
+.jsh-duelvs .jsh-score{font-style:normal;font-size:clamp(48px,15vw,92px);line-height:1}
+.jsh-duelvs .jsh-their{font-style:normal;font-size:clamp(48px,15vw,92px);line-height:1;
+  color:#9aa6cf;text-shadow:none}
+.jsh-judge{display:flex;align-items:center;gap:12px;color:#ffd76b;font-weight:800;
+  font-size:clamp(12px,3.1vw,15px);letter-spacing:.14em;
+  border:1.5px solid rgba(255,215,107,.4);border-radius:999px;padding:7px 20px;
+  background:rgba(255,215,107,.07);box-shadow:0 0 22px rgba(255,205,90,.12)}
+.jsh-judge b{font-size:clamp(21px,5.8vw,32px);line-height:1;
+  text-shadow:0 0 18px rgba(255,205,90,.75)}
+.jsh-goldcell{color:#ffd76b;text-shadow:0 0 14px rgba(255,205,90,.3)}
+.jsh-ringviz{width:clamp(96px,28vw,140px);height:clamp(96px,28vw,140px);
+  filter:drop-shadow(0 0 16px rgba(255,205,90,.35))}
 .jsh-stats{display:flex;gap:26px;justify-content:center;font-weight:800;
   font-size:clamp(18px,5vw,28px)}
 .jsh-stats span{display:flex;flex-direction:column;gap:4px}
@@ -1696,7 +1862,20 @@ export class Shell {
   background:rgba(14,18,32,.94);border:1.5px solid rgba(255,255,255,.2);border-radius:999px;
   padding:10px 20px;pointer-events:none;white-space:nowrap}
 .jsh-toast[hidden]{display:none}
+.jsh-toast.jsh-toast-wrap{white-space:normal;word-break:break-all;
+  max-width:min(86vw,420px);border-radius:18px;text-align:center;line-height:1.5}
 .jsh-in{animation:jshIn .32s cubic-bezier(.2,1.1,.4,1)}
+/* One entrance grammar for every screen: children rise in a quick cascade, so
+   home, over, duel and stats all move like the same designed object. */
+.jsh-in>*{animation:jshRise .5s cubic-bezier(.18,.9,.32,1) backwards}
+.jsh-in>*:nth-child(2){animation-delay:.04s}
+.jsh-in>*:nth-child(3){animation-delay:.08s}
+.jsh-in>*:nth-child(4){animation-delay:.12s}
+.jsh-in>*:nth-child(5){animation-delay:.16s}
+.jsh-in>*:nth-child(6){animation-delay:.19s}
+.jsh-in>*:nth-child(7){animation-delay:.22s}
+.jsh-in>*:nth-child(8){animation-delay:.25s}
+.jsh-in>*:nth-child(n+9){animation-delay:.28s}
 .jsh-pulse{animation:jshPulse 1.5s ease-in-out infinite}
 .jsh-pop{animation:jshPop .5s cubic-bezier(.2,1.6,.4,1)}
 @keyframes jshIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
@@ -1707,8 +1886,9 @@ export class Shell {
 @keyframes jshFill{from{width:0}to{width:100%}}
 @keyframes jshToast{0%{opacity:0;transform:translateX(-50%) translateY(12px)}
   10%,80%{opacity:1;transform:translateX(-50%)}100%{opacity:0;transform:translateX(-50%)}}
+@keyframes jshRise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){
-  .jsh-in,.jsh-pulse,.jsh-pop{animation:none}
+  .jsh-in,.jsh-pulse,.jsh-pop,.jsh-in>*{animation:none}
 }`
     document.head.append(st)
   }

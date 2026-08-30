@@ -1,0 +1,10 @@
+{
+  "name": "ai-experiment-",
+  "title": "Jolt",
+  "port": 8801,
+  "tsPort": 10000,
+  "setup": "npm --prefix jolt ci --no-audit --no-fund",
+  "verify": "npm --prefix jolt run verify",
+  "build": "npm --prefix jolt run build",
+  "start": "node jolt/deploy/serve.mjs"
+}

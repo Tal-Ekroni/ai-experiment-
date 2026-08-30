@@ -15,6 +15,21 @@
  *  - Player-facing hits are QUANTISED: earcons and the correct-answer chime
  *    snap to the next 16th of the grid, so the player's actions land inside
  *    the music instead of against it (the Rez trick).
+ *  - JUDGMENT TIER: a perfect answer has its own glassy earcon in a higher
+ *    register than the plain-correct chime — key-aware, grid-snapped, climbing
+ *    a pentatonic ladder with chain height and leaving a decaying echo on the
+ *    following 16ths, so a x12 chain SOUNDS twelve rungs higher than a x1.
+ *    When a chain snaps on a merely-correct answer the slip is audible (a
+ *    falling two-note break, deliberately off-grid); when a hot chain dies on
+ *    a miss the wrong-hit gains a descending shatter on top.
+ *  - PLAYER RIFF (actions literally become the music): every correct answer
+ *    appends a scale degree to an 8-note loop the sequencer plays back as the
+ *    bed's lead line, transposed with the current key. Sustained good play
+ *    composes the track; a miss wipes the loop and the melody the player
+ *    built audibly collapses out of the mix.
+ *  - The opening is quiet but PRESENT: soft hats from intensity zero and calm
+ *    bar-start pad plucks below the ramp's first act, so the first commands
+ *    breathe over a pulse instead of near-silence.
  *  - The VOICE has a script, not just labels: 2-3 phrasings per command picked
  *    at random, praise lines at streak milestones, and a performance-tiered
  *    taunt plus a spoken run callout at game over. Past intensity 0.5 the
@@ -44,6 +59,42 @@ import { windowFor, intensity, available, INHIBIT_WINDOW } from './commands'
 function estGapMs(i: number, afterMistake: boolean): number {
   const g = 420 - 280 * Math.min(1, Math.max(0, i))
   return afterMistake ? g * 1.6 : g
+}
+
+// ------------------------------------------------------- pure music arithmetic
+// Exported so tests/audio.test.mjs can verify grid + judgment math headlessly.
+
+/** The next 16th-note grid line at or after `now`. `nextNoteTime` is the
+ *  scheduler's lookahead horizon (some whole number of steps ahead); walk back
+ *  to the first grid line that has not yet sounded. Pure. */
+export function nextGridTime(now: number, nextNoteTime: number, stepDur: number): number {
+  let t = nextNoteTime
+  while (t - stepDur > now + 0.003) t -= stepDur
+  return Math.max(now, t)
+}
+
+/** Major-pentatonic degrees — the game's "can't sound bad" melodic alphabet. */
+export const PENT = [0, 2, 4, 7, 9]
+
+/** Semitone offset above the perfect-earcon root for the Nth link of a chain:
+ *  each consecutive perfect climbs one pentatonic rung, wrapping up an octave
+ *  every five, capped at chain 15 (where the score bonus caps too). Chain 1 is
+ *  the root; chain 15 sits 33 semitones up — the whole chain is a ladder the
+ *  player hears themselves climb. */
+export function perfectPitch(chain: number): number {
+  const idx = Math.max(0, Math.min(chain, 15) - 1)
+  return PENT[idx % PENT.length] + 12 * Math.floor(idx / PENT.length)
+}
+
+/** The player-authored lead loop holds this many notes (FIFO). */
+export const PLAYER_RIFF_LEN = 8
+
+/** Append a degree to the player riff, keeping the newest PLAYER_RIFF_LEN.
+ *  Mutates and returns the same array (the Sound instance owns it). */
+export function pushRiff(riff: number[], degree: number): number[] {
+  riff.push(degree)
+  while (riff.length > PLAYER_RIFF_LEN) riff.shift()
+  return riff
 }
 
 /** Ranked voice preference: local, characterful English voices first. */
@@ -108,6 +159,12 @@ const PRAISE_LOW = ['Nice.', 'Not bad.', 'Keep up!']
 const PRAISE_MID = ['Impressive!', "You're quick!", 'Sharp!']
 const PRAISE_HOT = ['On fire!', 'Unstoppable!', 'Show-off.', 'Machine!']
 
+/** Perfect-chain callouts — sparse by design (multiples of five only, and they
+ *  take precedence over streak praise so at most one line rides a command). */
+const CHAIN_LOW = ['Perfect five!', 'Five, clean!']
+const CHAIN_MID = ['Ten perfect. Ten!', 'Flawless ten!']
+const CHAIN_HOT = ['Still perfect!', 'Untouchable!', 'Surgical!']
+
 /** Game-over taunts, tiered by commands survived. Original attitude. */
 const OVER_SHORT = ["That's it? Already?", "Blink and it's over.", 'The warm-up beat you.']
 const OVER_MID = ['Down you go.', 'The beat wins this round.', 'Caught you slipping.']
@@ -155,6 +212,13 @@ export class Sound {
   // announcer can call out the run it just watched.
   private runCorrect = 0
   private runBestStreak = 0
+  private runBestChain = 0
+
+  // Judgment state: last chain height seen (so a break/shatter knows how high
+  // the chain was), and the player-authored lead loop the sequencer plays.
+  private lastChain = 0
+  private playerRiff: number[] = []
+  private riffPos = 0
 
   // Label → window scale/inhibit, built lazily from the real command specs.
   private specMap: Map<string, { scale: number; inhibit: boolean }> | null = null
@@ -181,6 +245,10 @@ export class Sound {
       && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel()
     this.runCorrect = 0
     this.runBestStreak = 0
+    this.runBestChain = 0
+    this.lastChain = 0
+    this.playerRiff.length = 0
+    this.riffPos = 0
     // (Re)arm the bed.
     this.step = 0
     this.bar = 0
@@ -198,9 +266,11 @@ export class Sound {
       this.droneB.frequency.cancelScheduledValues(t)
       this.droneA.frequency.setValueAtTime(110, t)
       this.droneB.frequency.setValueAtTime(110 * 1.006, t)
-      this.droneFilter.frequency.setValueAtTime(220, t)
+      // Warmer than before: the opening pad is quiet but unmistakably THERE
+      // (calm is not silence — the early-run presence fix).
+      this.droneFilter.frequency.setValueAtTime(320, t)
       this.droneGain.gain.setValueAtTime(0.0001, t)
-      this.droneGain.gain.exponentialRampToValueAtTime(0.05, t + 1.2)
+      this.droneGain.gain.exponentialRampToValueAtTime(0.08, t + 1.2)
     }
     if (this.schedulerId === null) {
       this.schedulerId = window.setInterval(() => this.schedule(), 25)
@@ -345,12 +415,7 @@ export class Sound {
     if (!this.ctx) return 0
     const now = this.ctx.currentTime
     if (!this.beatOn) return now
-    const stepDur = 60 / this.bpm() / 4
-    // nextNoteTime sits at the lookahead horizon; walk back to the first grid
-    // line that has not yet sounded.
-    let t = this.nextNoteTime
-    while (t - stepDur > now + 0.003) t -= stepDur
-    return Math.max(now, t)
+    return nextGridTime(now, this.nextNoteTime, 60 / this.bpm() / 4)
   }
 
   // -------------------------------------------------- real-difficulty lookup
@@ -437,12 +502,36 @@ export class Sound {
     if (step % 4 === 0) this.kick(t, 0.42)
     if (i >= 0.72 && step === 14) this.kick(t, 0.3)
 
-    // Hats: off-beat 8ths from low intensity, 16ths once the pressure is on.
-    if (i >= 0.1 && step % 4 === 2) {
-      this.noise({ at: t, durMs: 40, gain: 0.055 + i * 0.03, filter: 'highpass', freq: 7000, dest: bus })
+    // Hats: off-beat 8ths from the very first command (soft — presence, not
+    // pressure), 16ths once the pressure is on.
+    if (step % 4 === 2) {
+      this.noise({ at: t, durMs: 40, gain: 0.035 + i * 0.05, filter: 'highpass', freq: 7000, dest: bus })
     }
     if (i >= 0.5 && step % 2 === 1) {
       this.noise({ at: t, durMs: 26, gain: 0.035, filter: 'highpass', freq: 9000, dest: bus })
+    }
+
+    // Calm-act pad plucks: below the ramp's first act the bar breathes — a
+    // soft root on the downbeat, its fifth halfway. Gone once the bass owns
+    // the low mids, so the opening is present without ever being busy.
+    if (i < 0.3 && step === 0) {
+      this.note({ at: t, freq: root * 4, durMs: 420, type: 'sine', gain: 0.055, dest: bus, attackMs: 30 })
+    }
+    if (i < 0.3 && step === 8) {
+      this.note({ at: t, freq: root * 6, durMs: 380, type: 'sine', gain: 0.04, dest: bus, attackMs: 30 })
+    }
+
+    // PLAYER RIFF: the lead line is authored by the player's own correct
+    // answers (one degree per hit, newest 8 kept). Played on the off-8ths in
+    // the current key, so a run of corrects literally composes the track —
+    // and after a miss wipes it, its absence is the sound of starting over.
+    if (this.playerRiff.length > 0 && step % 4 === 2) {
+      const semis = this.playerRiff[this.riffPos % this.playerRiff.length]
+      this.riffPos++
+      this.note({
+        at: t, freq: root * 8 * Math.pow(2, semis / 12), durMs: 100,
+        type: 'triangle', gain: 0.05 + i * 0.025, dest: bus, attackMs: 4,
+      })
     }
 
     // Backbeat snare.
@@ -655,46 +744,131 @@ export class Sound {
 
   // ------------------------------------------------------------------- fx
 
-  correct(streak: number): void {
+  /** A correct answer, with its timing judgment: `perfect` is the engine's
+   *  PERFECT-band verdict, `chain` the live perfect-chain length AFTER this
+   *  answer. The judgment is what the player hears: a perfect gets the glassy
+   *  ladder earcon (higher with every link), a merely-correct answer gets the
+   *  familiar chime — and if it just snapped a chain, the snap is audible. */
+  correct(streak: number, perfect = false, chain = 0): void {
     if (!this.ctx || this.muted) return
     this.cancelPending()
     this.runCorrect++
     this.runBestStreak = Math.max(this.runBestStreak, streak)
-    // Rising pentatonic step per streak — the sound of a run going well —
-    // thickened with a fifth, and an octave shimmer once the streak is hot.
-    // Snapped to the next 16th so the player's hit becomes part of the music.
-    const scale = [0, 2, 4, 7, 9]
-    const n = scale[streak % scale.length] + 12 * Math.floor((streak % 15) / 5)
-    const f = 440 * Math.pow(2, n / 12)
+    this.runBestChain = Math.max(this.runBestChain, chain)
+    const chainWas = this.lastChain
+    this.lastChain = chain
     const g0 = this.nextGrid()
-    this.note({ at: g0, freq: f, durMs: 150, type: 'triangle', gain: 0.24 })
-    this.note({ at: g0, freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.1 })
-    if (streak >= 10) this.note({ at: g0 + 0.04, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
-    // Milestone flourish every 5: a fast ascending arpeggio.
-    if (streak > 0 && streak % 5 === 0) {
-      const t0 = g0 + 0.05
-      const arp = [0, 4, 7, 12]
-      for (let k = 0; k < arp.length; k++) {
-        this.note({ at: t0 + k * 0.055, freq: f * Math.pow(2, arp[k] / 12), durMs: 90, type: 'triangle', gain: 0.14 })
+    // Key-aware roots: the chime lives where the bed's key lives, so a hit
+    // never lands out of tune after a key change.
+    const keyMul = Math.pow(2, this.shift / 12)
+
+    if (perfect) {
+      this.perfectHit(g0, chain, 660 * keyMul)
+      // The hit authors the lead line at the height the chain reached
+      // (wrapped inside two octaves so the loop stays a lead, not a whistle).
+      pushRiff(this.playerRiff, perfectPitch(chain) % 24)
+    } else {
+      // A slow answer that snapped a live chain: the snap must be HEARD —
+      // engine keeps chain untouched through a held DO NOTHING (chain ===
+      // chainWas there), so only a true break (chain fell to 0) sounds.
+      if (chain === 0 && chainWas >= 3) this.chainBreak(chainWas)
+      // Rising pentatonic step per streak — the sound of a run going well —
+      // thickened with a fifth, and an octave shimmer once the streak is hot.
+      // Snapped to the next 16th so the player's hit is part of the music.
+      const n = PENT[streak % PENT.length] + 12 * Math.floor((streak % 15) / 5)
+      const f = 440 * keyMul * Math.pow(2, n / 12)
+      this.note({ at: g0, freq: f, durMs: 150, type: 'triangle', gain: 0.24 })
+      this.note({ at: g0, freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.1 })
+      if (streak >= 10) this.note({ at: g0 + 0.04, freq: f * 2, durMs: 130, type: 'sine', gain: 0.09 })
+      // Milestone flourish every 5: a fast ascending arpeggio.
+      if (streak > 0 && streak % 5 === 0) {
+        const t0 = g0 + 0.05
+        const arp = [0, 4, 7, 12]
+        for (let k = 0; k < arp.length; k++) {
+          this.note({ at: t0 + k * 0.055, freq: f * Math.pow(2, arp[k] / 12), durMs: 90, type: 'triangle', gain: 0.14 })
+        }
+        this.noise({ at: t0, durMs: 300, gain: 0.05, filter: 'highpass', freq: 8000 })
       }
-      this.noise({ at: t0, durMs: 300, gain: 0.05, filter: 'highpass', freq: 8000 })
+      pushRiff(this.playerRiff, n % 24)
     }
-    // Spoken praise at streak milestones — short enough to fit the gap, rides
-    // behind (never cancels) anything already speaking.
-    if (streak === 5 || (streak > 0 && streak % 10 === 0)) {
+
+    // Spoken milestones — sparse, and at most ONE line per command: chain
+    // callouts (every 5th link) outrank streak praise. queue:true rides
+    // behind whatever is speaking; the next command's say() still does its
+    // cancel-before-speak, so a callout can never delay a command.
+    let spoke = false
+    if (perfect && chain >= 5 && chain % 5 === 0) {
+      const lines = chain >= 15 ? CHAIN_HOT : chain >= 10 ? CHAIN_MID : CHAIN_LOW
+      this.speakLine(oneOf(lines), { rate: 1.35 + this.intensityV * 0.5, pitch: 1.2, queue: true })
+      spoke = true
+    }
+    if (!spoke && (streak === 5 || (streak > 0 && streak % 10 === 0))) {
       const lines = streak >= 20 ? PRAISE_HOT : streak >= 10 ? PRAISE_MID : PRAISE_LOW
       this.speakLine(oneOf(lines), { rate: 1.3 + this.intensityV * 0.6, pitch: 1.15, queue: true })
     }
     this.anticipate(false)
   }
 
+  /** The perfect earcon: a glass ping in a register of its own, one pentatonic
+   *  rung higher per chain link (perfectPitch), grid-snapped, gaining body and
+   *  sparkle as the chain grows, and echoing down the next 16ths so the chain
+   *  writes itself into the pattern. Every 5th link adds a rising shimmer. */
+  private perfectHit(at: number, chain: number, base: number): void {
+    const f = base * Math.pow(2, perfectPitch(chain) / 12)
+    const hot = Math.min(chain, 12)
+    this.note({ at, freq: f, durMs: 160, type: 'sine', gain: 0.18 + hot * 0.007 })
+    this.note({ at, freq: f * 2, durMs: 130, type: 'square', gain: 0.045 + hot * 0.004 })
+    this.noise({ at, durMs: 40, gain: 0.05, filter: 'highpass', freq: 9500 })
+    if (chain >= 3) this.note({ at, freq: f * 1.5, durMs: 120, type: 'sine', gain: 0.07 })
+    // Echo trail on the grid — one 16th behind, two once the chain is hot.
+    const stepDur = 60 / this.bpm() / 4
+    const echoes = chain >= 6 ? 2 : 1
+    for (let k = 1; k <= echoes; k++) {
+      this.note({
+        at: at + stepDur * k, freq: f, durMs: 90, type: 'sine',
+        gain: (0.18 + hot * 0.007) * 0.32 / k, cancellable: true,
+      })
+    }
+    if (chain > 0 && chain % 5 === 0) {
+      const arp = [0, 4, 7, 12]
+      for (let k = 0; k < arp.length; k++) {
+        this.note({ at: at + k * 0.05, freq: f * Math.pow(2, arp[k] / 12), durMs: 80, type: 'sine', gain: 0.11 })
+      }
+      this.noise({ at, durMs: 320, gain: 0.055, filter: 'highpass', freq: 7000, endFreq: 12000 })
+    }
+  }
+
+  /** A chain snapping on a slow-but-correct answer. Deliberately OFF-grid —
+   *  breaks interrupt the music — but far lighter than wrong(): the run is
+   *  still alive, only the perfection is gone. Starts near the pitch the
+   *  chain had reached and falls, so the height of the loss is audible. */
+  private chainBreak(chainWas: number): void {
+    if (!this.ctx) return
+    const t = this.ctx.currentTime
+    const f = 660 * Math.pow(2, perfectPitch(chainWas) / 12)
+    this.note({ at: t, freq: f, endFreq: f * 0.5, durMs: 140, type: 'triangle', gain: 0.14 })
+    this.note({ at: t + 0.05, freq: 196, endFreq: 130, durMs: 160, type: 'sine', gain: 0.16 })
+    this.noise({ at: t, durMs: 110, gain: 0.07, filter: 'lowpass', freq: 2400, endFreq: 300 })
+  }
+
   wrong(): void {
     if (!this.ctx || this.muted) return
     this.cancelPending()
+    // A miss wipes the player-authored lead line — the melody the run built
+    // collapses out of the mix, which is its own punishment.
+    const chainWas = this.lastChain
+    this.lastChain = 0
+    this.playerRiff.length = 0
+    this.riffPos = 0
     // Punchy and deliberately OFF-grid: failure interrupts the music rather
     // than joining it — a deep thud, a detuned saw falling out of tune, and a
     // slammed noise impact, while the bed drops out from under you.
     this.duck(0.25, 0.55)
+    // A hot perfect-chain dying is a bigger loss than a plain miss: add a
+    // descending glass shatter on top so the ear knows WHAT it just lost.
+    if (chainWas >= 5) {
+      this.noise({ durMs: 260, gain: 0.12, filter: 'highpass', freq: 5200, endFreq: 700 })
+    }
     this.note({ freq: 130, endFreq: 38, durMs: 260, type: 'sine', gain: 0.5, attackMs: 2 })
     this.note({ freq: 220, endFreq: 62, durMs: 340, type: 'sawtooth', gain: 0.2 })
     this.note({ freq: 233, endFreq: 58, durMs: 340, type: 'sawtooth', gain: 0.16 })
@@ -735,6 +909,7 @@ export class Sound {
     // player restarts before it fires.
     const survived = this.runCorrect
     const best = this.runBestStreak
+    const bestChain = this.runBestChain
     const taunt = survived >= 60 ? oneOf(OVER_GREAT)
       : survived >= 30 ? oneOf(OVER_GOOD)
         : survived >= 10 ? oneOf(OVER_MID)
@@ -743,7 +918,8 @@ export class Sound {
     this.overTimer = window.setTimeout(() => {
       this.overTimer = null
       this.speakLine(taunt, { rate: 1.02, pitch: 0.9 })
-      this.speakLine(`${survived} commands. Best streak, ${best}.`, {
+      const chainNote = bestChain >= 5 ? ` ${bestChain} perfect, chained.` : ''
+      this.speakLine(`${survived} commands. Best streak, ${best}.${chainNote}`, {
         rate: 1.0, pitch: 0.85, queue: true,
       })
     }, 700)
@@ -761,9 +937,10 @@ export class Sound {
     this.intensityV = v
     if (this.ctx && this.droneFilter && this.droneGain && this.beatOn) {
       const t = this.ctx.currentTime
-      // The pad brightens and swells as the run escalates.
-      this.droneFilter.frequency.setTargetAtTime(220 + v * v * 3800, t, 0.2)
-      this.droneGain.gain.setTargetAtTime(0.05 + v * 0.045, t, 0.3)
+      // The pad brightens and swells as the run escalates (from the warmer
+      // 320Hz/0.08 opening the presence fix set).
+      this.droneFilter.frequency.setTargetAtTime(320 + v * v * 3700, t, 0.2)
+      this.droneGain.gain.setTargetAtTime(0.08 + v * 0.03, t, 0.3)
     }
   }
 

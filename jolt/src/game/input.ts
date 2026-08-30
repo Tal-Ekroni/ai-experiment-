@@ -19,6 +19,15 @@
  *  - A clear fast swipe fires MID-GESTURE (lower latency than waiting for the
  *    finger to lift), everything less clear is judged on release. An exactly
  *    diagonal swipe is ambiguous at ANY distance and stays silent.
+ *  - Tap owns its slop region: an input whose total displacement stays within
+ *    tapSlop "did not move" by definition and can NEVER be read as a swipe,
+ *    however noisy its samples — flick speed is measured over a smoothed
+ *    multi-sample window, not a single sample pair.
+ *  - A second contact landing nearly on top of an existing finger is a SPLIT
+ *    CONTACT (fat thumb, knuckle brush), not a pinch attempt: it is folded
+ *    away so the primary finger's tap/hold still fires. Real pinches start
+ *    far apart, so pinch is only armed at >=SPLIT_CONTACT_PX spread and needs
+ *    an absolute convergence floor — split-contact jitter cannot fake it.
  *
  *  Latency budget: a recogniser can only be as fast as the physical gesture it
  *  watches (a hold IS a wait of HOLD_MS; a shake IS two direction reversals).
@@ -90,7 +99,9 @@ export interface PointerTuning {
   tapMaxPath: number
   /** Displacement that counts as a swipe on release, regardless of speed. */
   swipeMinDist: number
-  /** A short but FAST movement is still a swipe (flick). */
+  /** A short but FAST movement is still a swipe (flick). The flick path is
+   *  additionally gated on disp > tapSlop in up(): tap owns its slop region,
+   *  so this only matters between tapSlop and swipeMinDist. */
   flickMinDist: number
   flickMinV: number
   /** Fire a swipe mid-gesture once it is this unambiguous (distance AND speed). */
@@ -121,11 +132,36 @@ export function pointerTuning(vmin: number): PointerTuning {
 // PointerCore — tap / swipe / hold / pinch from raw pointer samples.
 // ---------------------------------------------------------------------------
 
+/** A second contact landing closer than this to an existing finger is one
+ *  fat/rolling touch that the digitiser split in two, NOT a second finger:
+ *  nobody starts a pinch with both fingertips on the same spot. Split
+ *  contacts are folded away (ignored, session not consumed) so the intended
+ *  tap/hold still fires from the primary track. This also gives pinch a
+ *  minimum arming spread: pinchBase is always >= SPLIT_CONTACT_PX. */
+export const SPLIT_CONTACT_PX = 40
+
+/** Absolute floor on pinch convergence, in px. Without it the proportional
+ *  threshold collapsed for small starting spreads (base 8px needed 4px; base
+ *  0 needed 0) and split-contact jitter emitted 'pinch' — a wrong-action
+ *  death during any non-pinch command. Always < pinchBase because pinch only
+ *  arms at >= SPLIT_CONTACT_PX spread. */
+export const PINCH_MIN_CONVERGE_PX = 28
+
+/** Flick velocity is displacement over a trailing multi-sample window (up to
+ *  FLICK_V_WINDOW_MS, only counted once the window spans FLICK_V_MIN_SPAN_MS)
+ *  rather than a single sample-pair peak: one noisy 5px/8ms sample inside a
+ *  tap must not masquerade as flick speed. */
+const FLICK_V_WINDOW_MS = 90
+const FLICK_V_MIN_SPAN_MS = 30
+
 interface Track {
   x0: number; y0: number; t0: number
   x: number; y: number; t: number
   path: number
-  peakV: number
+  /** Peak windowed velocity (px/ms) — see FLICK_V_WINDOW_MS. */
+  flickV: number
+  /** Trailing samples inside the velocity window (seeded with the down). */
+  recent: Array<{ x: number; y: number; t: number }>
 }
 
 export class PointerCore {
@@ -134,12 +170,24 @@ export class PointerCore {
   private consumed = false
   private pinching = false
   private pinchBase = 0
+  /** Pointer ids identified as split contacts: their samples are ignored. */
+  private splitIds = new Set<number>()
 
   constructor(private emit: (a: Action) => void, private tune: PointerTuning) {}
 
   down(id: number, x: number, y: number, t: number): void {
+    this.splitIds.delete(id)          // browsers reuse ids; clear stale state
     if (this.tracks.size === 0) { this.consumed = false; this.pinching = false }
-    this.tracks.set(id, { x0: x, y0: y, t0: t, x, y, t, path: 0, peakV: 0 })
+    // Split contact? Fold it away — no track, no pinch arming, and the
+    // session stays live so the primary finger's own gesture still fires.
+    for (const tr of this.tracks.values()) {
+      if (Math.hypot(x - tr.x, y - tr.y) < SPLIT_CONTACT_PX) {
+        this.splitIds.add(id)
+        return
+      }
+    }
+    this.tracks.set(id, { x0: x, y0: y, t0: t, x, y, t, path: 0, flickV: 0,
+                          recent: [{ x, y, t }] })
     if (this.tracks.size === 2) {
       // Second finger: this session is a pinch attempt. No tap/swipe/hold.
       this.pinching = true
@@ -149,19 +197,28 @@ export class PointerCore {
 
   move(id: number, x: number, y: number, t: number): void {
     const tr = this.tracks.get(id)
-    if (!tr) return
+    if (!tr) return                    // unknown or split contact: ignored
     const d = Math.hypot(x - tr.x, y - tr.y)
-    const dt = t - tr.t
-    if (dt > 0) tr.peakV = Math.max(tr.peakV, d / Math.max(dt, 8))
     tr.path += d
     tr.x = x; tr.y = y; tr.t = t
+    // Smoothed multi-sample flick velocity (see FLICK_V_WINDOW_MS).
+    tr.recent.push({ x, y, t })
+    while (tr.recent.length > 1 && t - tr.recent[0].t > FLICK_V_WINDOW_MS) tr.recent.shift()
+    const oldest = tr.recent[0]
+    const span = t - oldest.t
+    const vWin = span >= FLICK_V_MIN_SPAN_MS
+      ? Math.hypot(x - oldest.x, y - oldest.y) / span : 0
+    if (vWin > tr.flickV) tr.flickV = vWin
 
     if (this.consumed) return
 
     if (this.pinching) {
       if (this.tracks.size >= 2) {
         const now = this.spread()
-        const need = Math.min(this.pinchBase * 0.5, Math.max(30, this.pinchBase * 0.28))
+        // Proportional for wide grips, but never below the absolute floor —
+        // and never trivially satisfiable: pinchBase >= SPLIT_CONTACT_PX
+        // (split contacts never arm pinch), so need < pinchBase always.
+        const need = Math.max(PINCH_MIN_CONVERGE_PX, this.pinchBase * 0.28)
         if (this.pinchBase - now >= need) { this.consumed = true; this.emit('pinch') }
       }
       return
@@ -183,8 +240,9 @@ export class PointerCore {
     }
 
     // Mid-gesture swipe commit: far AND fast AND direction unambiguous.
-    const vNow = dt > 0 ? d / Math.max(dt, 8) : 0
-    if (disp >= this.tune.commitDist && vNow >= this.tune.commitMinV &&
+    // Speed is the same smoothed windowed velocity — a single spurious fast
+    // sample inside a slow drag cannot trip the commit.
+    if (disp >= this.tune.commitDist && vWin >= this.tune.commitMinV &&
         this.dominant(dx, dy, 1.4) !== null) {
       this.consumed = true
       this.emit(this.dominant(dx, dy, 1.4) as Action)
@@ -192,6 +250,7 @@ export class PointerCore {
   }
 
   up(id: number, x: number, y: number, t: number): void {
+    if (this.splitIds.delete(id)) return   // split contact lifting: a non-event
     const tr = this.tracks.get(id)
     if (!tr) return
     this.move(id, x, y, t)          // fold in any final movement (may commit)
@@ -208,9 +267,14 @@ export class PointerCore {
     // diagonal 45-degree swipe resolved to horizontal — a guess, and a life.
     // Strict dominance keeps the module's silence-over-guess rule at every
     // distance; a genuinely diagonal input emits nothing.
+    //
+    // The flick branch is gated on disp > tapSlop: anything ending inside the
+    // slop "did not move" by this module's own definition and must resolve as
+    // a tap (or silence), never a swipe — a 16px jittery tap or a fingertip
+    // roll-off used to emit swipe-* here, a wrong-action death on TAP IT.
     const dir = this.dominant(dx, dy, disp >= 40 ? 1.06 : tn.dominance)
-    if (dir !== null &&
-        (disp >= tn.swipeMinDist || (disp >= tn.flickMinDist && tr.peakV >= tn.flickMinV))) {
+    if (dir !== null && disp > tn.tapSlop &&
+        (disp >= tn.swipeMinDist || (disp >= tn.flickMinDist && tr.flickV >= tn.flickMinV))) {
       this.consumed = true
       this.emit(dir as Action)
       return
@@ -223,6 +287,7 @@ export class PointerCore {
   }
 
   cancel(id: number): void {
+    if (this.splitIds.delete(id)) return   // split contact: nothing to discard
     // Browser stole the gesture; discard it entirely.
     this.tracks.delete(id)
     this.consumed = true

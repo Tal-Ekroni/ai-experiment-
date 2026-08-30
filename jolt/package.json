@@ -10,7 +10,8 @@
     "shoot": "node tools/shoot.mjs",
     "playtest": "node tools/playtest.mjs",
     "playtest:latency": "node tools/playtest-latency.mjs",
-    "test": "node --test tests/input.test.mjs tests/content.test.mjs tests/mastery.test.mjs"
+    "test": "node --test tests/input.test.mjs tests/content.test.mjs tests/mastery.test.mjs tests/audio.test.mjs tests/shellui.test.mjs",
+    "verify": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "playwright": "^1.50.0",

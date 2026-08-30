@@ -53,7 +53,8 @@ const shell = new Shell({
     // The taught gesture was performed against the frozen command — credit it.
     inputGuardUntil = performance.now() + 250   // a swipe's trailing tap must not leak
     engine.submit(a)
-    if (engine.state.lastResult === 'correct') sound.correct(engine.state.streak)
+    const ts = engine.state
+    if (ts.lastResult === 'correct') sound.correct(ts.streak, ts.lastPerfect, ts.chain)
   },
   onResume: () => {
     // Fresh window for the interrupted command: an interruption never eats a life.
@@ -117,9 +118,11 @@ function handleAction(a: Action): void {
   }
   if (performance.now() < inputGuardUntil) return
   engine.submit(shell.translate(a, s.command))
-  const r = engine.state.lastResult
-  if (r === 'correct') sound.correct(engine.state.streak)
-  else if (r === 'wrong') sound.wrong()
+  const after = engine.state
+  // The judgment travels WITH the hit: perfect-band verdict and live chain
+  // height (post-resolve) drive the tiered earcon in audio.ts.
+  if (after.lastResult === 'correct') sound.correct(after.streak, after.lastPerfect, after.chain)
+  else if (after.lastResult === 'wrong') sound.wrong()
   maybeGameOver()                        // a wrong action can be the third life
 }
 
@@ -151,7 +154,10 @@ function tick(now: number) {
   // on the transition — lastResult alone persists across frames.
   if (before === 'awaiting' && (s.phase === 'resolved' || s.phase === 'over')) {
     if (s.lastResult === 'timeout') sound.wrong()
-    else if (s.lastResult === 'correct') sound.correct(s.streak)
+    // A lapsed inhibition window: never perfect, and the engine passes the
+    // chain THROUGH untouched — audio sees chain === its last value, so no
+    // break sound fires (holding your nerve must not sound like failing).
+    else if (s.lastResult === 'correct') sound.correct(s.streak, s.lastPerfect, s.chain)
   }
 
   maybeGameOver()

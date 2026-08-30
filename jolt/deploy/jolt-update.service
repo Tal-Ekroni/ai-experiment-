@@ -1,0 +1,6 @@
+[Unit]
+Description=Jolt auto-update (git pull + rebuild when remote moves)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash __JOLT_DIR__/jolt/deploy/update.sh
